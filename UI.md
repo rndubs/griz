@@ -151,3 +151,32 @@ The client manages remote launch. Users should not need a separate terminal to s
 - A user on a laptop can open a native Griz client, connect to an HPC, load a multi-billion-element Mili dataset, rotate/zoom interactively, pick individual elements, step through time, and export a screenshot — without X11, without VNC, and without a terminal.
 - The server binary is a close cousin of today's `batchopt` build and reuses the existing command interpreter unchanged.
 - Existing Griz command scripts continue to run against the new server.
+
+## 11. Next steps
+
+Detailed design is underway in [`ui-design/`](ui-design/). The folder contains one markdown file per implementation area, each in a common skeleton (Scope / Related / body / Open questions) that we are expanding one at a time and reviewing before any code is written. See [`ui-design/README.md`](ui-design/README.md) for the full index and suggested reading order.
+
+### Status of design docs
+
+| # | Doc | Status |
+|---|-----|--------|
+| 01 | [Architecture](ui-design/01-architecture.md) | **Drafted.** Pins component names (`griz-client`, `griz-server`), no separate launcher, rendezvous-file bootstrap with 32-byte token, three-thread server and client models, and invariants I1–I8 that anchor every downstream doc. |
+| 02 | [Protocol](ui-design/02-protocol.md) | Stub. Next up. |
+| 03 | [Server](ui-design/03-server.md) | Stub. Next up. |
+| 04 | [Client](ui-design/04-client.md) | Stub. Next up. |
+| 05 | [Rendering & streaming](ui-design/05-rendering-and-streaming.md) | Stub. |
+| 06 | [Picking & queries](ui-design/06-picking-and-queries.md) | Stub. |
+| 07 | [Launch (SSH + SLURM)](ui-design/07-launch-ssh-slurm.md) | Stub. |
+| 08 | [Feature parity](ui-design/08-feature-parity.md) | Stub. |
+| 09 | [Build, packaging & CI](ui-design/09-build-packaging-ci.md) | Stub. |
+| 10 | [Testing](ui-design/10-testing.md) | Stub. |
+| 11 | [Migration](ui-design/11-migration.md) | Stub. |
+
+### Immediate next tasks
+
+1. Flesh out `02-protocol.md`, `03-server.md`, and `04-client.md` — all three take their pinned decisions from `01-architecture.md` and together define the v1 contract.
+2. Then `05-rendering-and-streaming.md` and `06-picking-and-queries.md`, which depend on the protocol.
+3. Then `07-launch-ssh-slurm.md`, followed by the operational docs (`08`–`11`).
+4. Open questions accumulated in each doc should be triaged before code work begins.
+
+No implementation work starts until the relevant design doc is reviewed.
