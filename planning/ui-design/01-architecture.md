@@ -6,8 +6,9 @@ This document fixes the top-level shape of the Griz client/server split: process
 
 ## Related
 
-- `UI.md` §§3, 4, 6
+- `../UI.md` §§3, 4, 6, 11
 - [02-protocol](02-protocol.md), [03-server](03-server.md), [04-client](04-client.md), [05-rendering-and-streaming](05-rendering-and-streaming.md), [06-picking-and-queries](06-picking-and-queries.md), [07-launch-ssh-slurm](07-launch-ssh-slurm.md)
+- Shared with the MCP effort ([`../MCP.md`](../MCP.md)): [`../shared/server-binary.md`](../shared/server-binary.md), [`../shared/command-protocol.md`](../shared/command-protocol.md), [`../shared/output-capture.md`](../shared/output-capture.md), [`../shared/query-commands.md`](../shared/query-commands.md), [`../shared/results-map.md`](../shared/results-map.md)
 
 ## 1. Component diagram
 
@@ -46,9 +47,11 @@ There is deliberately no separate `griz-launcher` process. Launch logic — `ssh
 
 `griz-server` is produced by extending the existing `batchopt` build target rather than introducing a new target, to keep the autoconf/gmake build graph untouched for site packagers. The RPC listener is a new translation unit that wraps `interpret.c` and `offscreen.c`; everything else in `Src/` is linked unchanged.
 
+`griz-server` exposes **two transports** selected by a runtime flag, `--transport={stdio,rpc}`. The RPC transport (described in this folder) is what the Qt client speaks. The stdio transport is consumed by the MCP Python bridge ([`../MCP.md`](../MCP.md)) and reuses the exact same command dispatcher, output sink, query commands, and state schema — only the framing differs. The canonical list of pieces shared between the two transports lives in [`../shared/`](../shared/). For this document, "the server" means `griz-server --transport=rpc` unless otherwise noted.
+
 ## 3. Naming conventions
 
-Binaries: `griz-client` (installed on workstations), `griz-server` (installed on HPC, alongside the current `griz` and `griz_batch` binaries — do not replace them). The legacy `griz` binary remains the authoritative entry point for batch scripts; `griz-server` is strictly the RPC-speaking variant.
+Binaries: `griz-client` (installed on workstations), `griz-server` (installed on HPC, alongside the current `griz` and `griz_batch` binaries — do not replace them). The legacy `griz` binary remains the authoritative entry point for batch scripts. `griz-server` accepts `--transport={stdio,rpc}`; the UI always launches it with `--transport=rpc`, while the MCP bridge launches the same binary with `--transport=stdio`. See [`../shared/server-binary.md`](../shared/server-binary.md) for the full invocation surface.
 
 Client config root: `$XDG_CONFIG_HOME/griz` with fallback `~/.config/griz`. Files:
 
@@ -114,7 +117,7 @@ These are enforced by design and must hold across all sibling documents.
 - **I2. Selection and camera live server-side.** The client may cache for display but the server is authoritative. A client restart with a surviving server recovers both via snapshot request.
 - **I3. State events are monotonic.** Each event carries `state_seq` strictly greater than its predecessor within a session; gaps are repairable only by snapshot request. Clients must not reorder.
 - **I4. The client never needs mesh data.** Geometry, topology, and field arrays stay on the server. Picking, queries, and overlays are server-rendered or server-computed. Violating this invariant would defeat the streaming design.
-- **I5. The server never initiates connections.** It only binds, writes rendezvous, and accepts. No outbound DNS, no phone-home, no callback sockets. This keeps site security review tractable.
+- **I5. The server never initiates connections.** In RPC mode it only binds, writes rendezvous, and accepts. In stdio mode (MCP) it does not touch the network at all. No outbound DNS, no phone-home, no callback sockets in either case. This keeps site security review tractable.
 - **I6. OpenGL is single-threaded.** One OSMesa context, one render thread, no exceptions. Any library added to the server must tolerate this.
 - **I7. The protocol is negotiated at session start.** Version, feature flags, codec set, and max message sizes are agreed once before the first command. Mid-session renegotiation is not supported in v1.
 - **I8. Existing scripts work unchanged.** The legacy `griz` and `griz_batch` binaries, their command files, and their environment expectations remain valid. `griz-server` is additive.
