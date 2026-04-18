@@ -32,11 +32,29 @@ package — not where the API lives.
               └────────────┘
                      │
                      ▼    stdio + line-delimited JSON
-              ┌────────────┐
-              │  griz4b    │  Existing batch binary + a new -server
-              │  -server   │  mode (small C addition).
-              └────────────┘
+              ┌──────────────────────┐
+              │  griz-server         │  New binary (shared with the Qt UI
+              │  --transport=stdio   │  effort), produced from batchopt.
+              └──────────────────────┘
 ```
+
+> **Shared with the UI effort.** The C-side server binary, the JSON envelope,
+> the output-capture plumbing, the `q_*` query commands, and the results-name
+> map are all used by the Qt UI effort ([`UI.md`](UI.md)) as well. To avoid
+> building any of this twice, those pieces are specified in [`shared/`](shared/)
+> and referenced throughout the relevant sections below:
+>
+> - [`shared/server-binary.md`](shared/server-binary.md) — one `griz-server`
+>   binary, `--transport={stdio,rpc}`. MCP uses `stdio`.
+> - [`shared/command-protocol.md`](shared/command-protocol.md) — envelope,
+>   handshake, error taxonomy.
+> - [`shared/output-capture.md`](shared/output-capture.md) — `griz_out()` /
+>   `griz_err()` sink indirection.
+> - [`shared/query-commands.md`](shared/query-commands.md) — `q_state`,
+>   `q_results`, `q_view`, `q_materials`, `q_selection`, plus the canonical
+>   state schema.
+> - [`shared/results-map.md`](shared/results-map.md) — YAML-backed
+>   `(field, component) → griz name` mapping.
 
 Key properties of this layering:
 
@@ -101,14 +119,33 @@ and a Python MCP server as the bridge.
 
 ## 4. Griz-Side Changes (C)
 
-### 4.1 New invocation mode: `-server`
+The C-side changes in this section are **shared with the UI effort**. Each
+subsection points at the authoritative shared doc; what remains here is
+MCP-specific wiring and context. If a decision in this section disagrees with
+a `shared/` doc, the shared doc wins — please file an update.
 
-Add a flag to `scan_args()` in `Src/viewer.c` that selects a new
-`process_server_mode()` function instead of `process_serial_batch_mode()`.
-Only built when `SERIAL_BATCH` is defined (i.e. in the batch/OSMesa build).
+### 4.1 New binary: `griz-server`
 
-The server-mode build artifact is `griz4b` (the existing batch binary) invoked
-as `griz4b -server -i <db>`.
+See [`shared/server-binary.md`](shared/server-binary.md) for the full
+decision. Summary:
+
+- The server-mode build artifact is a **new** binary, `griz-server`, produced
+  from the existing `batchopt` object set. It is **not** a flag on today's
+  `griz4b` / `griz_batch` — the legacy batch binary stays unchanged.
+- `griz-server` accepts `--transport={stdio,rpc}`. MCP uses `stdio`. The Qt UI
+  effort uses `rpc`. Everything above the transport (command dispatcher,
+  output capture, query commands) is identical between the two.
+- MCP invocation:
+
+  ```
+  griz-server --transport=stdio -i <database> -w 1024 1024
+  ```
+
+In the C source, the stdio dispatch loop lives in a new
+`process_server_mode_stdio()` function alongside the existing
+`process_serial_batch_mode()`, selected by `scan_args()` when
+`--transport=stdio` is present. It is built whenever the `griz-server` target
+is built (see [`shared/server-binary.md`](shared/server-binary.md) §Build).
 
 ### 4.2 Server loop
 
@@ -153,73 +190,87 @@ Key properties:
 
 ### 4.3 JSON response framing
 
+**Authoritative doc:** [`shared/command-protocol.md`](shared/command-protocol.md).
+
 `server_dispatch()` wraps `parse_command()` and emits one JSON object per
-command. Suggested schema (line-delimited JSON, a.k.a. JSONL):
+command, using the shared envelope. For stdio (MCP), framing is one JSON
+object per newline (a.k.a. JSONL).
+
+Request (either a bare command line for interactive debugging, or the JSON
+form for the Python worker):
 
 ```json
-{"id": "<echo>", "status": "ok",    "stdout": "...", "stderr": "..."}
-{"id": "<echo>", "status": "error", "message": "unknown command: foo"}
+{"type": "request", "id": "42", "cmd": "rx 30"}
 ```
 
-Input is either a raw Griz command string (simplest) **or** a JSON object:
+Response (success / error, with `data` present for `q_*` queries and typed
+error codes for failures — see the shared doc for the full taxonomy):
 
 ```json
-{"id": "42", "cmd": "rx 30"}
+{"type": "response", "id": "42", "status": "ok", "stdout": "...", "stderr": "", "data": null}
+{"type": "response", "id": "42", "status": "error",
+ "error": {"code": "unknown_command", "message": "unknown command: foo"}}
 ```
 
-Both forms are accepted. The `id` is optional and is echoed back so the MCP
-server can correlate requests and responses (useful once we allow pipelining).
+Two things changed from earlier MCP.md drafts to align with the shared
+protocol: (1) errors now carry a `code` from a closed taxonomy instead of a
+flat `message` field; (2) a one-time versioned handshake (`ready` →
+`hello` → `hello_ack`) is required before the first request. Trivial overhead
+for the Python worker; required by the UI RPC transport. See the shared doc.
 
 ### 4.4 Capturing Griz's text output
 
-Griz today prints user-facing feedback through `popup_dialog()`,
-`wrt_text()`, `write_start_text()` and similar helpers. For server mode we
-need to intercept that output so it can be packed into the JSON response
-instead of interleaving with the protocol.
+**Authoritative doc:** [`shared/output-capture.md`](shared/output-capture.md).
 
-Two workable approaches; recommend the first:
+Summary: introduce `griz_out()` / `griz_err()` helpers. In GUI / legacy
+batch builds they forward to the existing console helpers; in `griz-server`
+they append to per-command buffers that `server_dispatch()` flushes into the
+response's `stdout` / `stderr` fields. An audit pass replaces direct
+`printf` / `fprintf(stdout,…)` / `puts(…)` calls on batch-reachable paths.
+This is needed by both the MCP stdio transport and the UI RPC transport;
+leakage through stdout / stderr would corrupt either one.
 
-1. **Add a thin output sink indirection.** In the existing helpers, when
-   `env.server_mode` is true, append to a per-command buffer instead of
-   writing directly to `stdout`. `server_dispatch()` flushes that buffer into
-   the JSON `stdout`/`stderr` fields. This is localized and avoids breaking
-   GUI/batch behavior.
-2. Redirect C `stdout` to a pipe at startup and drain it after each command.
-   Simpler code, but fragile across libraries that cache `FILE*`.
+### 4.5 Structured query commands
 
-Concretely, a scan for every `fprintf(stdout, …)`, `printf(…)`, `puts(…)` in
-`Src/interpret.c`, `Src/draw.c`, `Src/results.c`, and `Src/gui.c` (batch
-paths only) is needed; route them through a new `griz_out()` /
-`griz_err()` pair that checks `env.server_mode`.
+**Authoritative doc:** [`shared/query-commands.md`](shared/query-commands.md).
 
-### 4.5 Structured query commands (optional, phase 2+)
+A small set of new read-only commands (`q_state`, `q_time`, `q_view`,
+`q_materials`, `q_results`, `q_selection`, `q_render`, `q_database`) expose
+viewer state that today is only readable by a human. Each populates the
+response's `data` field with a subset of the canonical state schema defined
+in the shared doc.
 
-A small set of new commands expose state that today is only readable by a
-human:
+MCP consumes these by calling them on demand from `Griz.state()` and the
+sub-API methods. The UI effort consumes the same schema through its
+`state_changed` event stream and uses `q_state` for initial snapshot and
+event-gap recovery — so the commands themselves, and the dict they return,
+must be identical across the two front ends.
 
-- `q_state` — current state index, time, min/max state indices.
-- `q_results` — list of available result variables.
-- `q_selection` — currently selected/highlighted objects.
-- `q_view` — rotation, translation, scale, zoom.
-- `q_materials` — material IDs, visibility, enable flags.
-
-Each writes a single JSON object to the per-command buffer so it flows back
-in the response envelope. These are additive commands — no risk to existing
-users.
+Phase plan: `q_state`, `q_view`, `q_time`, `q_materials`, `q_results` are
+phase-2 deliverables (landing with JSON framing). `q_selection`, `q_render`,
+`q_database` can follow in phase 3 as the Python API grows.
 
 ### 4.6 Image capture
 
 No new rendering code needed. The MCP server calls the existing `outpng
-<path>` command. Because the `-server` binary is the batch build, rendering
-goes through OSMesa and does not require an X display. The MCP server reads
-the resulting file from disk and returns it as MCP `Image` content.
+<path>` command. Because `griz-server` is built from the batch/OSMesa object
+set, rendering goes through OSMesa and does not require an X display. The MCP
+server reads the resulting file from disk and returns it as MCP `Image`
+content.
+
+(The UI RPC transport streams frames inline over the protocol rather than
+going through `outpng` + disk. Both mechanisms are fine for their respective
+transports; the MCP file-based path is simpler and kept for phase-1 stdio.
+An inline-screenshot command may be added later — see
+[`shared/command-protocol.md`](shared/command-protocol.md) § Open questions.)
 
 ### 4.7 Build system
 
-- Add the new source (or the new function in `viewer.c`) to
-  `Src/Makefile.Library`'s batch build.
-- No new library deps.
-- Configure-time check not needed; the feature piggybacks on `SERIAL_BATCH`.
+See [`shared/server-binary.md`](shared/server-binary.md) § Build. Summary:
+`griz-server` is a new target in `Src/Makefile.Library` built from the
+`batchopt` object set plus `server_core.c` / `server_stdio.c` /
+`server_rpc.c` (and their headers). stdio mode pulls no extra deps beyond
+libc. Existing `griz` and `griz_batch` targets are untouched.
 
 ---
 
@@ -314,16 +365,19 @@ implementation detail; it is not re-exported.
 class Worker:
     def __init__(self, griz_bin, database, width, height):
         self.proc = subprocess.Popen(
-            [griz_bin, "-server", "-i", database, "-w", str(width), str(height)],
+            [griz_bin, "--transport=stdio",
+             "-i", database, "-w", str(width), str(height)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1,
         )
-        self._await_event("ready")
+        ready = self._await_event("ready")
+        self._handshake(ready)                # hello / hello_ack (shared/command-protocol.md)
         self._lock = threading.Lock()
 
     def cmd(self, griz_cmd: str, *, timeout: float = 30.0) -> dict:
         with self._lock:
-            self.proc.stdin.write(griz_cmd + "\n"); self.proc.stdin.flush()
+            req = json.dumps({"type": "request", "cmd": griz_cmd})
+            self.proc.stdin.write(req + "\n"); self.proc.stdin.flush()
             line = _readline_with_timeout(self.proc.stdout, timeout)
             return json.loads(line)
 ```
@@ -339,42 +393,22 @@ Notes:
 
 ### 5.4 The results mapping
 
+**Authoritative doc:** [`shared/results-map.md`](shared/results-map.md).
+
 Griz encodes result names tersely (`sx`, `sy`, `exx`, `temp`, …). The Python
-layer hides this. A hand-curated table in `griz/results_map.py` owns the
-translation:
+layer hides this via a YAML-backed mapping shipped as a data file at
+`Src/data/results_map.yaml` — the single source of truth shared with the Qt
+UI client, which loads the same file to populate its menus.
 
-```python
-# griz/results_map.py
-RESULTS = {
-    "stress": {
-        "xx": "sx", "yy": "sy", "zz": "sz",
-        "xy": "sxy", "yz": "syz", "zx": "szx",
-        "von_mises": "seff",
-        "pressure":  "spres",
-    },
-    "strain": {
-        "xx": "exx", "yy": "eyy", "zz": "ezz",
-        "xy": "exy", "yz": "eyz", "zx": "ezx",
-    },
-    "temperature": {None: "temp"},
-    "displacement": {
-        "x": "ux", "y": "uy", "z": "uz", "magnitude": "umag",
-    },
-    # ... extended as needed
-}
-```
+`griz/results_map.py` loads the YAML at import time and exposes a
+`resolve(field, component=None) -> griz_name` helper. Lookup semantics are
+unchanged from earlier drafts: `g.field.show("stress", component="xx")`
+resolves to `res sx; show result`. Unknown `(field, component)` pairs raise
+`UnknownFieldError` with a suggestion list built from the YAML. For names
+not in the table, users can fall through with `g.raw("res <name>")`.
 
-`g.field.show("stress", component="xx")` resolves via this table to
-`res sx; show result`. Unknown `(field, component)` pairs raise
-`UnknownFieldError` with a suggestion list from the table. For names the
-table doesn't know, users can fall through with `g.raw("res <name>")`.
-
-This table is also the source of documentation — the docs page is
-generated from it, so "what components are valid" and "what Griz command
-do they map to" are in exactly one place.
-
-Griz's result vocabulary is stable, so this is hand-maintained; no runtime
-metadata query needed.
+Docs for supported field / component pairs are generated from the same
+YAML, so there is one place to add a field and one place to read about it.
 
 ### 5.5 The `griz_mcp` package — MCP adapter
 
@@ -442,7 +476,7 @@ Grouped by what the user sees. Each row is one `Griz` method **and** one
 
 Environment variables (consumed by `griz.Griz.__init__` via
 `os.environ.get`):
-- `GRIZ_BIN` — path to `griz4b` (batch binary). Default: `griz4b` on PATH.
+- `GRIZ_BIN` — path to `griz-server`. Default: `griz-server` on PATH.
 - `GRIZ_DEFAULT_WIDTH`, `GRIZ_DEFAULT_HEIGHT`.
 - `GRIZ_WORKDIR` — where screenshots and transient files land.
 
@@ -456,8 +490,9 @@ it down.
 
 ### Phase 1 — Smoke test, no JSON (1–2 days)
 
-- Add `-server` flag; implement `process_server_mode()` reading plain
-  newline-delimited commands from stdin.
+- Stand up the `griz-server` target (minimal skeleton, stdio transport only).
+  Implement `process_server_mode_stdio()` reading plain newline-delimited
+  commands from stdin.
 - No response framing yet — just run commands.
 - Python side spawns the subprocess and sends text; screenshot via
   `outpng` + file read.
@@ -502,9 +537,9 @@ it down.
   responses correctly (including `Image` content for screenshots).
 - **Integration:** a tiny Mili fixture database checked into
   `Src/python/griz/tests/fixtures/`. Test harness spawns real
-  `griz4b -server`, drives it with the real `Griz` class through a
-  scripted sequence (rotate, set state, screenshot), asserts the PNG is
-  non-empty and the JSON envelopes parse.
+  `griz-server --transport=stdio`, drives it with the real `Griz` class
+  through a scripted sequence (rotate, set state, screenshot), asserts the
+  PNG is non-empty and the JSON envelopes parse.
 - **Regression:** the existing file-based `-b` mode must keep working
   unchanged; a single smoke test covers that path.
 - **CI:** runs only the Python unit tests by default; integration tests
@@ -537,18 +572,31 @@ it down.
 
 ## 9. Deliverables
 
-- **C patches** to `Src/viewer.c`, `Src/interpret.c` (and friends): `-server`
-  mode, JSON line framing, output sink indirection, and `q_*` query
-  commands. Gated on `SERIAL_BATCH` so GUI and legacy batch builds are
-  unaffected.
+Shared with the UI effort (owned by whichever effort lands first; see the
+shared docs for detail):
+
+- **New `griz-server` binary target** with stdio transport
+  ([`shared/server-binary.md`](shared/server-binary.md)).
+- **Shared JSON envelope and handshake** in `server_core.c`
+  ([`shared/command-protocol.md`](shared/command-protocol.md)).
+- **`griz_out()` / `griz_err()` sink indirection** and audit of batch-reachable
+  `printf` / `fprintf(stdout,…)` sites
+  ([`shared/output-capture.md`](shared/output-capture.md)).
+- **`q_*` query commands** and the state schema they return
+  ([`shared/query-commands.md`](shared/query-commands.md)).
+- **`Src/data/results_map.yaml`** as the single source of truth
+  ([`shared/results-map.md`](shared/results-map.md)).
+
+MCP-specific:
+
 - **`Src/python/griz/`** — the public `griz` Python package with the
   `Griz` class, namespaced sub-APIs (`field`, `view`, `time`, `materials`),
-  the hand-curated results mapping, unit tests, and user-facing README
-  with script examples.
+  a YAML-loader wrapper around `Src/data/results_map.yaml`, unit tests, and
+  user-facing README with script examples.
 - **`Src/python/griz_mcp/`** — the MCP adapter: `@mcp.tool()` wrappers
   around `Griz`, tests, and an MCP-focused README with example transcripts.
-- **Build docs** — `Src/Makefile.Library` update noting server mode;
-  `README.md` pointer to the new Python packages.
+- **Build docs** — `Src/Makefile.Library` update for the `griz-server`
+  target; `README.md` pointer to the new Python packages.
 - **End-to-end examples** — a Jupyter-style walkthrough using the `griz`
   package directly, and an MCP client transcript driving the same
   database through `griz-mcp`.

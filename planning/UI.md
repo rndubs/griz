@@ -152,7 +152,19 @@ The client manages remote launch. Users should not need a separate terminal to s
 - The server binary is a close cousin of today's `batchopt` build and reuses the existing command interpreter unchanged.
 - Existing Griz command scripts continue to run against the new server.
 
-## 11. Next steps
+## 11. Relationship to the MCP effort
+
+A parallel effort ([`MCP.md`](MCP.md)) exposes Griz to Python and MCP-compatible AI clients via a stdio JSON bridge. It shares its C-side underpinnings with this UI effort. To avoid duplicated or diverging implementations, the overlapping pieces are specified in [`shared/`](shared/) and referenced from both plans:
+
+- [`shared/server-binary.md`](shared/server-binary.md) — one `griz-server` binary with `--transport={stdio,rpc}`. MCP uses `stdio`; this UI effort uses `rpc`.
+- [`shared/command-protocol.md`](shared/command-protocol.md) — common JSON envelope (request / response / event), versioned handshake, typed errors. RPC-specific framing lives in [`ui-design/02-protocol.md`](ui-design/02-protocol.md) and wraps these same messages.
+- [`shared/output-capture.md`](shared/output-capture.md) — `griz_out()` / `griz_err()` sink indirection so `popup_dialog` / `wrt_text` / `printf` cannot corrupt the transport.
+- [`shared/query-commands.md`](shared/query-commands.md) — `q_state`, `q_view`, `q_materials`, … and the canonical state schema reused by this UI's `state_changed` events.
+- [`shared/results-map.md`](shared/results-map.md) — single-source-of-truth mapping from human-readable result names to Griz command names, consumed by the Qt client and the Python package.
+
+The Qt client owns its own UI state and the rendering-transport decisions (frame codec, picking, LOD); the MCP bridge owns Python ergonomics and MCP tool wrappers. The C-side dispatcher layer, output capture, query commands, and results map are shared and should be built once.
+
+## 12. Next steps
 
 Detailed design is underway in [`ui-design/`](ui-design/). The folder contains one markdown file per implementation area, each in a common skeleton (Scope / Related / body / Open questions) that we are expanding one at a time and reviewing before any code is written. See [`ui-design/README.md`](ui-design/README.md) for the full index and suggested reading order.
 
