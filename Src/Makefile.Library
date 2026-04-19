@@ -245,7 +245,12 @@ ifeq (@BATCH_ENABLE@,True)
 # -DGRIZ_SERVER_BUILD so viewer.c's interactive main() is compiled out
 # and the stdio/RPC main() from server_main.c is linked instead.
 # Produces bin_server_opt/griz-server.
-SERVER_OBJS = $(OBJS) server_main.o
+#
+# server_core.o wraps the stdio loop's JSON request/response envelope
+# (Phase 2 of planning/MCP.md) and is the only TU that includes cJSON
+# beyond cJSON.c itself — neither gets pulled into batch_opt.
+CJSON_DIR = $(abs_top_srcdir)/ext/cJSON
+SERVER_OBJS = $(OBJS) server_main.o server_core.o cJSON.o
 
 server_opt:	LIBS = $(BASELIBS) $(OSMESA_LIBS) @X11_LIBRARY_PATHS@ @NO_MESA_X11_LIBS@
 server_opt:	LDFLAGS_EXTRA += $(OSMESA_LIBS) @X11_LIBRARY_PATHS@ @NO_MESA_X11_LIBS@
@@ -258,8 +263,13 @@ server_opt:	GRIZ_EXE_PATH = $(EXEC_PATH)/$(GRIZ_EXE)
 server_opt:	GRIZ_BATCH_EXE = $(GRIZ_EXE)
 server_opt:	MILILIBPATH = @MILI_LIBRARY_PATHS@
 server_opt:	DEFINES += @CC_DEFINES_GRIZ@ @BATCH_DEFINES@ -DGRIZ_SERVER_BUILD
-server_opt:	CPPFLAGS  = @CC_DEFINES_GRIZ@ @BATCH_DEFINES@ -DGRIZ_SERVER_BUILD $(INCLUDE_PATHS) -I$(OSMESA_HOME)/../include -I$(top_builddir)
+server_opt:	CPPFLAGS  = @CC_DEFINES_GRIZ@ @BATCH_DEFINES@ -DGRIZ_SERVER_BUILD $(INCLUDE_PATHS) -I$(OSMESA_HOME)/../include -I$(top_builddir) -I$(CJSON_DIR)
 server_opt:	mk_dirs buildinfo.h server_build
+
+# cJSON.c lives outside VPATH (Src/ext/cJSON/). Compile it with an
+# explicit rule rather than symlinking it into the shadow src tree.
+cJSON.o: $(CJSON_DIR)/cJSON.c $(CJSON_DIR)/cJSON.h
+	$(CC) $(CC_FLAGS) $(CPPFLAGS) -c $< -o $@
 
 # Dedicated link step for the server binary so that server_main.o is an
 # explicit prerequisite (target-specific OBJS overrides do not flow

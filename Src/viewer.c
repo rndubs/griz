@@ -2900,18 +2900,30 @@ process_serial_batch_mode( char *batch_input_file_name, Analysis *analy )
 
 #ifdef GRIZ_SERVER_BUILD
 
+#include "server_core.h"
+
 /************************************************************
  * TAG( process_server_mode_stdio )
  *
- * Phase 1 server loop: initialize Griz for headless operation,
- * open the database, bring up an OSMesa context, and drive the
- * existing command interpreter with plain-text lines read from
- * stdin. "quit", "exit", "end", or EOF on stdin ends the loop.
+ * Headless server loop: initialize Griz, open the database,
+ * bring up an OSMesa context, and drive the existing command
+ * interpreter with either plain-text or JSON-enveloped lines
+ * read from stdin. "quit", "exit", "end", or EOF on stdin ends
+ * the loop.
  *
- * The JSON envelope and handshake described in planning/mcp/05-
- * protocol.md are deferred to Phase 2; for now the only output
- * sentinel is a single "READY\n" line emitted once setup is
- * complete.
+ * Phase 2 status (planning/mcp/05-protocol.md):
+ *   - JSON request envelope: supported. Clients may send either
+ *     {"type":"request","id":"<id>","cmd":"<griz command>"} or
+ *     a raw command line.
+ *   - JSON response envelope: every executed command produces
+ *     a single-line response via server_emit_response().
+ *   - Handshake (ready/hello/hello_ack): not yet wired — the
+ *     "READY" sentinel still stands in as the startup marker.
+ *   - Output capture: not yet wired — the response's `stdout`
+ *     and `stderr` fields are always empty strings. Any chatter
+ *     from parse_command() continues to land on the real stdout
+ *     and will intersperse with response lines until the
+ *     griz_out/griz_err sink-indirection item is done.
  */
 #define GRIZ_SERVER_MAX_LINE 4096
 
@@ -3000,7 +3012,10 @@ process_server_mode_stdio( const char *db_path, int width, int height )
 
     while ( fgets( line, sizeof( line ), stdin ) != NULL )
     {
+        ServerRequest req;
+        char cmd_buf[GRIZ_SERVER_MAX_LINE];
         size_t len = strlen( line );
+
         while ( len > 0
                 && ( line[len - 1] == '\n' || line[len - 1] == '\r' ) )
             line[--len] = '\0';
@@ -3008,12 +3023,35 @@ process_server_mode_stdio( const char *db_path, int width, int height )
         if ( line[0] == '\0' || line[0] == '#' )
             continue;
 
-        if ( server_is_terminator( line ) )
-            break;
+        if ( server_parse_request( line, &req ) != 0 )
+        {
+            /* Malformed JSON — error response already emitted. */
+            continue;
+        }
 
-        parse_command( line, analy );
+        if ( server_is_terminator( req.cmd ) )
+        {
+            server_emit_response( req.id, 1, "", "" );
+            server_request_free( &req );
+            break;
+        }
+
+        /* parse_command() takes a mutable buffer (it tokenises in place);
+         * copy the resolved command so the cJSON-owned string is not
+         * disturbed. Truncate on overflow — GRIZ_SERVER_MAX_LINE matches
+         * the input line limit so truncation shouldn't happen in practice
+         * unless the client sends a pathological JSON request. */
+        strncpy( cmd_buf, req.cmd, sizeof( cmd_buf ) - 1 );
+        cmd_buf[sizeof( cmd_buf ) - 1] = '\0';
+
+        parse_command( cmd_buf, analy );
         fflush( stdout );
         fflush( stderr );
+
+        /* Output capture is a separate Phase 2 item; until it lands the
+         * response carries empty stdout/stderr strings. */
+        server_emit_response( req.id, 1, "", "" );
+        server_request_free( &req );
     }
 
     /* Remove the per-session history file the same way batch mode does. */

@@ -6,10 +6,16 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB = REPO_ROOT / "Src" / "test" / "image" / "bar71" / "bar71.pltA"
-DEFAULT_BIN = next(
-    iter(REPO_ROOT.glob("Src/GRIZ4-*/bin_server_opt/griz-server")),
-    None,
+
+# Pick the most recently built binary. Plain glob+next is not deterministic
+# and will happily pick up stale `GRIZ4-*-old` build trees that shadow the
+# current configure output.
+_server_binaries = sorted(
+    REPO_ROOT.glob("Src/GRIZ4-*/bin_server_opt/griz-server"),
+    key=lambda p: p.stat().st_mtime,
+    reverse=True,
 )
+DEFAULT_BIN = _server_binaries[0] if _server_binaries else None
 
 
 @pytest.fixture(scope="session")

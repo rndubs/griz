@@ -240,7 +240,11 @@ def _find_griz_server() -> str:
         return on_path
 
     repo_root = Path(__file__).resolve().parents[3]
-    candidates = sorted(repo_root.glob("Src/GRIZ4-*/bin_server_opt/griz-server"))
+    candidates = sorted(
+        repo_root.glob("Src/GRIZ4-*/bin_server_opt/griz-server"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)

@@ -29,7 +29,7 @@ Top-level progress tracker. Detailed design for each topic lives in
 
 ### Phase 2 — JSON protocol & output capture ([02](mcp/02-server-binary.md), [05](mcp/05-protocol.md), [08 §2.2](mcp/08-phasing.md))
 
-- [ ] JSON request/response envelope (cJSON integration)
+- [x] JSON request/response envelope (cJSON integration) *(cJSON 1.7.19 vendored at `Src/ext/cJSON/`; `server_core.{c,h}` wraps request parsing + response emission; `process_server_mode_stdio` accepts both raw lines and `{"type":"request",...}` and emits one response line per command. `stdout`/`stderr` fields are empty placeholders until the output-capture item lands. Verified by `pygriz/tests/test_worker.py::test_json_envelope_{response,rejects_malformed}`)*
 - [ ] Handshake sequence (`ready` → `hello` → `hello_ack`)
 - [ ] `griz_out()` / `griz_err()` sink indirection implemented
 - [ ] Audit & replace `printf` / `fprintf(stdout,…)` on batch paths
