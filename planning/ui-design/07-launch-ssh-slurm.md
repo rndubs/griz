@@ -139,6 +139,8 @@ After `sbatch`/`srun` returns:
 
 32-byte urandom generated server-side, base64-encoded in the rendezvous. Client presents it on the first frame (see [02-protocol](02-protocol.md) §2.3). Server validates in constant time. On mismatch: server emits `error.code = "protocol_mismatch"` and closes.
 
+The same token is reused across SSH reconnects within a single `griz-server` lifetime (see [01-architecture](01-architecture.md) Invariant I12). No rotation, no rekey events. Security boundary is rendezvous-file confidentiality (0600 in `$HOME`).
+
 ### 4.3 Alternative: stdout handoff
 
 For `direct` on a login node, the server can print the rendezvous JSON to stdout and let the launching SSH channel relay it. Cleaner than filesystem coordination. Recommend: **still use the file**, but also print a one-line summary for debugability. Keeps a single path.
@@ -151,16 +153,30 @@ Server deletes its own rendezvous on clean shutdown ([03-server](03-server.md) �
 
 Two paths to consider; **recommend: system SSH**.
 
+### 5.0 MVP auth assumption
+
+For the MVP (variants B/C/D), the client assumes the user can already run `ssh user@host` from their terminal **without an interactive password or MFA prompt** — i.e. they have a working SSH key + agent, a pre-established `ControlMaster` socket, an active kerberos ticket, or an equivalent ambient credential. The client invokes the system `ssh` binary and inherits whatever auth the user has set up; it does not manage credentials, prompt for passwords, or auto-spawn `ControlMaster`. If `ssh user@host` fails interactively in a terminal, it will fail the same way under the client, and the user is expected to fix it in their shell environment.
+
+Anecdotal data point (LLNL TOSS, 2026-04): plain `ssh <user>@<machine>.llnl.gov` "just works" for at least one developer's setup, suggesting the MVP assumption is realistic for the primary target site without additional auth UX.
+
+Out of scope for MVP, deferred to post-v1 polish:
+
+- Auto-managing a `ControlMaster` socket (spawning a master, prompting the user to auth in a terminal, reusing the socket for subsequent connections).
+- In-app MFA / `SSH_ASKPASS` integration.
+- Embedded SSH (`libssh2`) for platforms without system SSH.
+
+§§5.1 and 5.2 below describe the eventual design; the MVP implements the §5.1 happy path only and assumes preconfigured auth.
+
 ### 5.1 System SSH (default, recommend)
 
 - Spawn `/usr/bin/ssh` (or `%PATH% ssh`) as a `QProcess`.
 - Honors `~/.ssh/config`, key agents (gnome-keyring, macOS Keychain), known_hosts, MFA prompts, certificate auth.
-- The client sets `SSH_ASKPASS` to its own helper binary to pipe prompts into an in-app modal — optional; users without it fall back to terminal prompting if one is attached.
+- *Post-MVP:* the client sets `SSH_ASKPASS` to its own helper binary to pipe prompts into an in-app modal. For MVP, no askpass integration; users fall back to terminal prompting if one is attached, or to the §5.0 ambient-credential assumption.
 - Tunnel via `ssh -N -L <local_port>:127.0.0.1:<remote_port> <host>`.
 
 Pros: no embedded SSH maintenance burden; full auth-feature fidelity; matches how users already connect.
 
-Cons: Windows doesn't always ship a usable SSH. Mitigation: recent Windows ships OpenSSH; document it as the path for v1, and include `libssh2` as a fallback in phase 3.
+Cons: Windows doesn't always ship a usable SSH. Mitigation: recent Windows ships OpenSSH; document it as the path for v1, and include `libssh2` as a fallback in phase 3. (Windows is post-v1 anyway; see [01-architecture](01-architecture.md) §5 "Platform support".)
 
 ### 5.2 `libssh2` embedded (phase 3 fallback)
 
@@ -177,7 +193,7 @@ A dialog that surfaces the SLURM job state live, at the user's attention level:
 - **Queue phase** (`PENDING`): "Queued: 5 min remaining (est.)" — derive from `squeue --start`. Cancel button.
 - **Startup phase** (`RUNNING`, rendezvous not yet readable): "Allocating node, starting Griz…" — 1 s poll on rendezvous.
 - **Ready phase**: status bar shows remaining walltime, continuously updated via `squeue` once per 30 s. If `walltime_remaining < 5 min`, promote to a modal warning.
-- **Log tail** (optional): a collapsible "diagnostics" panel showing the tail of `$HOME/.griz/logs/{session-id}.log` via `ssh tail -f`. Off by default (bandwidth), toggle-able.
+- **Log tail** *(post-MVP):* a collapsible "diagnostics" panel showing the tail of `$HOME/.griz/logs/{session-id}.log` via `ssh tail -f`. Off by default (bandwidth), toggle-able. Per [01-architecture](01-architecture.md) Invariant I10, the MVP does not surface server logs in-client; users fetch them manually (e.g. `ssh <host> cat $HOME/.griz/logs/{session-id}.log`).
 
 End-of-walltime: server emits `session_ending(reason="slurm_walltime", seconds_remaining=N)` (see [03-server](03-server.md) §7.3), client shows the modal.
 
@@ -192,7 +208,7 @@ End-of-walltime: server emits `session_ending(reason="slurm_walltime", seconds_r
 The UI should make "what's going on" observable without the user opening a terminal:
 
 - **Status bar.** Session state (Connecting / Queued / Starting / Running / Disconnected), host nickname, remaining walltime, current FPS (from frame seq deltas), stream bitrate.
-- **Session menu.** "Show server log" opens a window that `ssh tail`s the remote log file. "Cancel job" triggers `scancel` over SSH.
+- **Session menu.** "Cancel job" triggers `scancel` over SSH. *(Post-MVP:* "Show server log" opens a window that `ssh tail`s the remote log file. The MVP omits in-client log surfacing per [01-architecture](01-architecture.md) Invariant I10; users fetch logs manually with `ssh <host> cat $HOME/.griz/logs/{session-id}.log`.)
 - **Notifications.** Non-blocking toast for "Job started", "5 min walltime remaining", "Tunnel dropped — reconnecting".
 
 ## 9. Reconnect and extend
@@ -226,7 +242,7 @@ Mirrors [01-architecture](01-architecture.md) §7 briefly:
 
 ## Open questions
 
-- **Bastion + MFA prompts in-app.** System SSH's `SSH_ASKPASS` works on Linux; less clean on macOS. If a large fraction of users are on macOS with MFA, we may need an in-app prompt path beyond ASKPASS. Defer until we see the distribution.
-- **Shared filesystem assumption.** A minority of clusters do not expose `$HOME` on compute nodes. Fallback: server writes the rendezvous to a site-agreed shared path via `scp` over the login node. Adds complexity; defer until a site demands it (same open question in [01-architecture](01-architecture.md)).
+- **Bastion + MFA prompts in-app.** System SSH's `SSH_ASKPASS` works on Linux; less clean on macOS. If a large fraction of users are on macOS with MFA, we may need an in-app prompt path beyond ASKPASS. Defer until we see the distribution. (MVP sidesteps this entirely via the §5.0 ambient-credential assumption.)
+- ~~**Shared filesystem assumption.**~~ *Resolved:* shared `$HOME` between login and compute nodes is an MVP prerequisite (see [01-architecture](01-architecture.md) Invariant I11). Sites without it are out of scope until one demands support; the `dir_template` field already lets operators redirect to a non-`$HOME` shared mount when one exists.
 - **Rendezvous sweep scope.** On successful connect, do we sweep only our own stale rendezvous, or *all* rendezvous older than 24h? First is safer; latter is cleaner. Lean first.
 - **`module load` portability.** The env-setup heredoc assumes `/bin/sh` environment modules. If a site uses a different mechanism (e.g. spack env, conda activate), the profile should support it via free-form shell snippet; already does.
