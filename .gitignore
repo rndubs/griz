@@ -19,3 +19,6 @@ dist/
 
 # core dumps from native crashes (e.g. griz-server outrgb abort)
 *.core
+
+# sandbox stubs (see sandbox.sh) — not committed, regenerated on demand
+.sandbox/
