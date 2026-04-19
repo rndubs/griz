@@ -131,6 +131,17 @@ batch_opt:
             cd $(SRC); \
 		  $(MAKE) batch_opt SYS_NAME=$(OS_NAME);
 
+serveropt: server_opt
+server_opt:
+		@ for src_dir in $(SRC_DIRS); do \
+			cd $(ROOT_DIR); \
+			cd $$src_dir; \
+			$(MAKE) opt SYS_NAME=$(OS_NAME); \
+		done
+		@ cd $(ROOT_DIR); \
+            cd $(SRC); \
+		  $(MAKE) server_opt SYS_NAME=$(OS_NAME);
+
 batchdebug: batch_debug
 batch_debug:
 		@ for src_dir in $(SRC_DIRS); do \

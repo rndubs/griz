@@ -222,10 +222,15 @@ extern void
 write_history_text( char *, Bool_type );
 
 
+#ifndef GRIZ_SERVER_BUILD
 /************************************************************
  * TAG( main )
  *
  * Griz main routine.
+ *
+ * Compiled out when GRIZ_SERVER_BUILD is defined so the griz-server
+ * binary can supply its own main() while still linking viewer.c's
+ * helper routines.
  */
 int
 main( int argc, char *argv[] )
@@ -489,6 +494,7 @@ main( int argc, char *argv[] )
     manage_timer( 8, 1 );
 #endif
 }
+#endif /* GRIZ_SERVER_BUILD */
 
 
 /************************************************************

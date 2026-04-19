@@ -19,7 +19,7 @@ Top-level progress tracker. Detailed design for each topic lives in
 
 ### Phase 1 — Foundation & smoke test ([02](mcp/02-server-binary.md), [03](mcp/03-python-api.md), [08 §2.1](mcp/08-phasing.md))
 
-- [ ] `griz-server` target builds from `batchopt` objects
+- [x] `griz-server` target builds from `batchopt` objects
 - [ ] Server accepts plain-text commands via stdin (`process_server_mode_stdio()`)
 - [ ] OSMesa rendering works headlessly in server mode
 - [ ] `outpng` produces valid PNG files from server mode
