@@ -6,6 +6,22 @@ Top-level progress tracker. Detailed design for each topic lives in
 [`mcp/`](mcp/); phase breakdown and milestone criteria live in
 [`mcp/08-phasing.md`](mcp/08-phasing.md).
 
+### MVP polish — high priority before first user test
+
+Must fix (users will hit these immediately):
+
+- [ ] **Implement `q_results` server-side** — `list_fields` MCP tool and `field.list()` / `field.info()` all error with `unknown_command` today. A user asking "what fields are available?" gets a crash instead of an answer.
+- [ ] **Implement `q_materials` server-side** — `materials.list()` errors the same way. Users can `hide`/`show` by id but can't discover what materials exist.
+- [ ] **Screenshot format usable by MCP clients** — `outrgb` produces SGI RGB files; most MCP clients (Claude Desktop, etc.) can't display that. Either enable PNG in the build (`--enable-nopng` removed) or add Python-side conversion (PIL/`rgb→png`). Without this, `screenshot` is effectively broken for MCP users.
+- [ ] **Basic worker command timeout** — if `griz-server` hangs (bad DB, GL stall), the Python side blocks forever with no recovery. Add a default timeout (e.g. 30s) to `Worker.cmd()` with a clear `TimeoutError`.
+
+Should fix (rough edges that erode trust):
+
+- [ ] **Clear error when `griz-server` not on PATH** — today this surfaces as a cryptic `FileNotFoundError` from `subprocess.Popen`. Catch it and tell the user what to do.
+- [ ] **End-to-end smoke test through the MCP protocol** — verify the full flow (MCP client → `griz-mcp` → `griz` → `griz-server`) with a real Mili database, not just unit tests with mocks.
+- [ ] **MCP tool descriptions tuned for LLM consumption** — tool docstrings should list available field names, explain what a "state" is, etc. so the LLM can use the tools without guessing.
+- [ ] **Update `shared/output-capture.md`** — the doc describes source-level `griz_out()`/`griz_err()` sinks but the implementation uses fd-level `dup2` redirect. Align the doc to what shipped.
+
 ### Planning documents (design complete when checked)
 
 - [x] [mcp/01-architecture.md](mcp/01-architecture.md) — system overview & component layering
@@ -77,11 +93,11 @@ Gated on Phase 2 server work (tracked under shared/query-commands.md): `field.li
 
 ### Shared with UI effort ([shared/](shared/))
 
-- [ ] [shared/server-binary.md](shared/server-binary.md) — `griz-server` target & transports
-- [ ] [shared/command-protocol.md](shared/command-protocol.md) — envelope & handshake
-- [ ] [shared/output-capture.md](shared/output-capture.md) — `griz_out` / `griz_err` plumbing
-- [ ] [shared/query-commands.md](shared/query-commands.md) — `q_*` commands & state schema
-- [ ] [shared/results-map.md](shared/results-map.md) — `results_map.yaml` as single source of truth
+- [x] [shared/server-binary.md](shared/server-binary.md) — `griz-server` target & transports *(design complete; stdio transport implemented and working. RPC transport is a future UI concern.)*
+- [x] [shared/command-protocol.md](shared/command-protocol.md) — envelope & handshake *(design complete; envelope, handshake, and error taxonomy all implemented in Phase 2. Open questions on back-pressure and cancellation are deferred to later phases.)*
+- [x] [shared/output-capture.md](shared/output-capture.md) — `griz_out` / `griz_err` plumbing *(design complete; implementation uses fd-level `dup2` redirect rather than source-level sinks — functionally equivalent, doc update tracked in MVP polish above.)*
+- [x] [shared/query-commands.md](shared/query-commands.md) — `q_*` commands & state schema *(design complete; `q_state`/`q_view`/`q_time` implemented. Remaining commands `q_results`/`q_materials`/`q_selection`/`q_render`/`q_database` tracked in MVP polish above.)*
+- [x] [shared/results-map.md](shared/results-map.md) — `results_map.yaml` as single source of truth *(design complete; YAML file and Python loader implemented. Server-side generated header deferred until `q_results` lands.)*
 
 ---
 
