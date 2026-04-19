@@ -1,28 +1,77 @@
 # Griz UI Modernization Plan
 
-## 0. MCP Implementation Progress Tracker
+## 0. MVP Implementation Tracker
 
-**MCP (Model Context Protocol) Implementation** - Exposing Griz visualization capabilities to AI assistants and Python scripts
+Scope: the shipped stdio server, an RPC transport on top of it, a Qt 6 native client, and remote launch. Target deployment is [01-architecture.md §5](ui-design/01-architecture.md) variant A (Linux all-in-one, no SSH) first, then variants B–D (login-node and SLURM compute-node). Drawn from [`ui-design/01`–`07`](ui-design/); design docs 08–11 (feature parity, build/CI, testing, migration) are **not** part of the MVP tracker.
 
-**Status**: Planning Complete, Ready for Implementation
+Status legend: ⬜ not started · 🟡 in progress · ✅ done
 
-| Phase | Component | Status | Location |
-|-------|-----------|--------|----------|
-| 1 | Architecture & Planning | ✅ Complete | [`mcp/01-architecture.md`](mcp/01-architecture.md) |
-| 1 | Server Binary Design | ✅ Complete | [`mcp/02-server-binary.md`](mcp/02-server-binary.md) |
-| 1 | Python API Design | ✅ Complete | [`mcp/03-python-api.md`](mcp/03-python-api.md) |
-| 1 | MCP Adapter Design | ✅ Complete | [`mcp/04-mcp-adapter.md`](mcp/04-mcp-adapter.md) |
-| 1 | Protocol Definition | ✅ Complete | [`mcp/05-protocol.md`](mcp/05-protocol.md) |
-| 1 | Results Mapping | ✅ Complete | [`mcp/06-results-mapping.md`](mcp/06-results-mapping.md) |
-| 1 | Testing Strategy | ✅ Complete | [`mcp/07-testing.md`](mcp/07-testing.md) |
-| 1 | Implementation Phases | ✅ Complete | [`mcp/08-phasing.md`](mcp/08-phasing.md) |
-| 2 | C Server Implementation | 🟡 Not Started | [`mcp/02-server-binary.md`](mcp/02-server-binary.md) |
-| 2 | JSON Protocol | 🟡 Not Started | [`mcp/05-protocol.md`](mcp/05-protocol.md) |
-| 3 | Python griz Package | 🟡 Not Started | [`mcp/03-python-api.md`](mcp/03-python-api.md) |
-| 4 | MCP Adapter Package | 🟡 Not Started | [`mcp/04-mcp-adapter.md`](mcp/04-mcp-adapter.md) |
-| 5 | Testing & Polish | 🟡 Not Started | [`mcp/07-testing.md`](mcp/07-testing.md) |
+### Phase 1 — Server refactor & query surface (shared with MCP)
+Source: [03-server.md §9 steps 1–5](ui-design/03-server.md). Richer state + events on today's shipped stdio server; no RPC dependency. Benefits the MCP bridge too.
 
-**Next Action**: Begin Phase 2 implementation - Server binary and JSON protocol
+- ⬜ Extract `server_core_startup.c` and `server_stdio.c` from `Src/viewer.c:3118–3302` (no behavior change).
+- ⬜ Extract `server_query.c` from `Src/viewer.c:2955–3116` (no behavior change).
+- ⬜ Extend `q_state`, `q_view`, `q_materials` payloads to the full schema in [`shared/query-commands.md`](shared/query-commands.md) — [03-server.md §4](ui-design/03-server.md).
+- ⬜ Implement `q_selection`, `q_render`, `q_database`.
+- ⬜ Implement `notify_state` + `Src/server_events.c` + `state_changed` event emission with monotonic `state_seq` and `state_overflow` sentinel — [03-server.md §5](ui-design/03-server.md).
+
+### Phase 2 — RPC transport
+Source: [02-protocol.md §7](ui-design/02-protocol.md), [03-server.md §9 steps 6–8](ui-design/03-server.md).
+
+- ⬜ Extract transport-neutral `server_core_dispatch()` from the current stdio loop.
+- ⬜ Add `Src/server_rpc.c`: `bind(127.0.0.1:0)`, write rendezvous JSON (0600), `accept`, validate first-frame 32-byte token with constant-time compare.
+- ⬜ 5-byte framing (`uint32 N + kind`) with `kind ∈ {0x01 JSON, 0x02 binary, 0x03 heartbeat}` and a 16 MiB cap — [02-protocol.md §2.2](ui-design/02-protocol.md).
+- ⬜ 20-second heartbeats with RTT echo; 60-second silence ⇒ `session_ending(reason="peer_idle")`.
+- ⬜ Port `pygriz_mcp/tests/test_smoke.py` to run against `--transport=rpc` as the envelope-parity gate.
+- ⬜ Split dispatch into three threads (command / render / I/O) with bounded MPSC queues and a latest-wins frame mailbox — [03-server.md §2.2](ui-design/03-server.md).
+- ⬜ SIGTERM handler emits `session_ending(reason="signal_term", seconds_remaining=N)` and flushes within ≤2 s — [03-server.md §7.3](ui-design/03-server.md).
+
+### Phase 3 — Rendering & frame push
+Source: [05-rendering-and-streaming.md](ui-design/05-rendering-and-streaming.md) MVP scope (§§3, 4.1, 5.3, 6, 7.1). LOD, H.264/AV1, MP4 animation export, `q_stats`, and EGL-surfaceless are post-MVP.
+
+- ⬜ Render-thread capture hook: `update_display` → `glFinish` → `glReadPixels` from OSMesa.
+- ⬜ In-process JPEG encoder (libjpeg-turbo); emit as `kind=0x02` subtype `0x01` codec `0x01` with subtype JSON header (`w, h, seq, rendered_at, encode_ms, quality`).
+- ⬜ 30 Hz render-trigger cap; server-side coalesce of drag commands before enqueue.
+- ⬜ Render → I/O single-slot latest-wins mailbox; monotonic `frame_seq` so the client infers drops from gaps.
+- ⬜ Viewport resize: `server_viewport_resize(w, h)` re-creates the OSMesa context; reject >4096² with typed `resource_limit` error.
+- ⬜ Inline PNG screenshot path (`kind=0x02` subtype `0x02` codec `0x02`) with continuation-frame chunking for >16 MiB bodies — [02-protocol.md §3](ui-design/02-protocol.md).
+
+### Phase 4 — Picking & element queries
+Source: [06-picking-and-queries.md §10 MVP path](ui-design/06-picking-and-queries.md). Box select, ray pick, hover probe, ID-buffer cache, and multi-select derivations are post-MVP.
+
+- ⬜ Add `draw_mode = DRAW_IDS` flag in `Src/draw.c` with per-primitive color override (~100 LOC); transparent materials skipped in the ID pass.
+- ⬜ New command `pick_at <x> <y> <mode>`: ID-buffer pass → decode `(id, kind)` from `(r,g,b,a)` → dispatch through existing `hilite` handler → return `{kind, id, material, coords_world, result_value}`; miss returns `data=null` with `status="ok"`.
+- ⬜ Selection state: `picked` (multi-select, MVP max 1) + `highlighted` (singleton); emit `state_changed` on mutation.
+- ⬜ Implement `q_selection` returning the `selection` schema block.
+- ⬜ Implement `q_node <id>` and `q_element <id>` metadata queries via existing element-table indexing.
+
+### Phase 5 — Qt client scaffolding (variant A target)
+Source: [04-client.md](ui-design/04-client.md). First target: Linux all-in-one loopback (client + server on the same workstation, no SSH, no SLURM) — variant A from [01-architecture.md §5](ui-design/01-architecture.md). The Python worker at `pygriz/src/griz/worker.py` is the reference implementation for the network layer.
+
+- ⬜ `client/` tree per [04-client.md §2.1](ui-design/04-client.md); CMake + Qt 6 Widgets; third-party via Conan or vcpkg (pinned in 09-build-packaging-ci.md).
+- ⬜ `net/Worker` + `net/Framing`: length-framed read/write, hello/hello_ack, request-id correlation with per-id waiter + timeout.
+- ⬜ `model/SessionState`: in-memory mirror of `q_state`; apply `state_changed` diffs; `stateOverflow()` signal triggers a full refetch — [04-client.md §4](ui-design/04-client.md).
+- ⬜ `ui/MainWindow`: menubar (File / Edit / View / Draw / Select / Animate / Window / Help); every menu action routes through `Console::execute`.
+- ⬜ `ui/Viewport`: `QOpenGLWidget` that blits received frames; resize-to-server throttled to 250 ms quiescence; neutral-background fallback when disconnected.
+- ⬜ `ui/Console`: prompt + output pane; in-session Up/Down history; inline error rendering with `error.code` badge.
+- ⬜ `commands/CommandBridge`: drag → `rx`/`ry`/`tx`/`ty`, scroll → `zoom`, click → `pick_at`, `R` → `rview`; one-command-in-flight rate limit.
+- ⬜ Docks: `MaterialsDock`, `TimeSlider`, `ResultsDock`, `SelectionDock` wired to `SessionState` signals via `Qt::QueuedConnection`.
+- ⬜ Status bar: connection state, FPS from `frame_seq` deltas, host nickname, current `state_seq`.
+- ⬜ Error presentation: handshake `protocol_mismatch` modal, tunnel-death modal, `state_overflow` silent refetch — [04-client.md §10](ui-design/04-client.md).
+
+### Phase 6 — Remote launch (SSH + SLURM)
+Source: [07-launch-ssh-slurm.md](ui-design/07-launch-ssh-slurm.md). Prerequisites: shared `$HOME` between login and compute nodes ([Invariant I11](ui-design/01-architecture.md)) and working ambient SSH auth — `ssh user@host` succeeds from the user's terminal without interactive prompts ([07 §5.0](ui-design/07-launch-ssh-slurm.md)).
+
+- ⬜ `hosts.toml` schema + loader (`model/HostProfiles`) per [07 §2.2](ui-design/07-launch-ssh-slurm.md); site starter profiles in `/etc/griz/hosts.d/`.
+- ⬜ **Connect…** dialog and **Host → Manage hosts…** dialog — [04-client.md §3](ui-design/04-client.md), [07 §2.4](ui-design/07-launch-ssh-slurm.md).
+- ⬜ System-SSH driver (`net/SshDriver` wrapping `QProcess`); honors user `~/.ssh/config`, agent, `known_hosts`.
+- ⬜ Launch method `direct` — login-node server with `forbid_login_node_compute` site guard.
+- ⬜ Launch method `slurm` — `sbatch --parsable` + `srun` on a compute node (primary).
+- ⬜ Launch method `preallocated` — `srun --jobid=<id>` into an existing allocation.
+- ⬜ Rendezvous read: poll `ssh cat <path>` at 500 ms cadence, 60 s timeout; surface `sacct`/`squeue` state on failure.
+- ⬜ `ssh -N -L` tunnel lifecycle owned by the network thread; tunnel death → "Connection lost — relaunch?" modal (single connection per server lifetime, Invariant I12).
+- ⬜ SLURM UI phases: `PENDING` (queue + ETA), `RUNNING` (rendezvous poll), `READY` (walltime countdown in status bar, modal warning <5 min remaining).
+- ⬜ `session_ending(reason="slurm_walltime")` modal with countdown and Relaunch / Save & quit actions.
 
 ---
 
