@@ -23,7 +23,7 @@ Top-level progress tracker. Detailed design for each topic lives in
 - [x] Server accepts plain-text commands via stdin (`process_server_mode_stdio()` in `Src/viewer.c`)
 - [x] OSMesa rendering works headlessly in server mode (verified via `outrgb` producing a valid SGI image at the requested dimensions)
 - [ ] `outpng` produces valid PNG files from server mode *(blocked: default configure uses `--enable-nopng`; needs a build with PNG support)*
-- [ ] Minimal Python `Worker` spawns server and sends commands
+- [x] Minimal Python `Worker` spawns server and sends commands *(uv-managed package `llnl-griz` at `pygriz/`, importable as `griz`; `Worker` waits for the `READY` sentinel, drains stdout/stderr in background threads, sends plain-text commands, and shuts down via `quit`. Verified by `pygriz/tests/test_worker.py` — 5 passing)*
 - [x] Clean shutdown with no resource leaks on the command-loop exit path *(image-write paths inherit a pre-existing batch-mode `double free or corruption` abort in `outrgb`; reproduces on `griz4s.linux_opt_batch` too and is not a server-mode regression — track in Phase 2 output-capture work)*
 - [x] End-to-end smoke test passes for stdin command loop + state navigation + RGB screenshot; full image-format coverage gated on the two items above
 
