@@ -2,34 +2,165 @@
 
 ## Scope
 
-The wire contract between client and server: transport, framing, message catalog, versioning, error handling. Everything that must be agreed on before either side can be written.
+The wire contract between `griz-client` and `griz-server --transport=rpc`: transport carrier, byte-level framing, how the JSON envelope from [`../shared/command-protocol.md`](../shared/command-protocol.md) is carried, binary frames (images, picks), versioning, flow control, and sequencing guarantees.
 
-Out of scope: how the server handles commands internally (see [03-server](03-server.md)), how the client renders received frames (see [05-rendering-and-streaming](05-rendering-and-streaming.md)).
+**Not** redefined here: request/response shapes, hello/hello_ack, error taxonomy, and the `q_*` + `state_changed` catalog — all of that is pinned in [`../shared/command-protocol.md`](../shared/command-protocol.md) and applies verbatim to RPC. Only the framing and the additions needed for image streaming are RPC-specific.
 
 ## Related
 
-- `UI.md` §3.3 (Transport), §9 (Protocol risk)
-- [01-architecture](01-architecture.md), [06-picking-and-queries](06-picking-and-queries.md)
+- `../UI.md` §3.3 (Transport), §9 (Protocol risk)
+- [`../shared/command-protocol.md`](../shared/command-protocol.md) — canonical envelope.
+- [01-architecture](01-architecture.md) §§4, 6 — data flow and threading.
+- [05-rendering-and-streaming](05-rendering-and-streaming.md) — frame codec choices.
+- [06-picking-and-queries](06-picking-and-queries.md) — pick request/reply payloads.
 
-## Sections to fill
+## 1. Current state (2026-04)
 
-- **Transport.** TCP inside SSH as baseline. Single stream or multiple. Keepalives.
-- **Serialization choice.** gRPC (protobuf + HTTP/2) vs. hand-rolled framed binary vs. something else. Criteria and recommendation.
-- **Message catalog.** At least:
-  - Session: `Hello`, `Capabilities`, `Goodbye`, `Error`.
-  - Commands: `RunCommand(text)` → result stream.
-  - State: `StateEvent(kind, payload)` server-pushed.
-  - Rendering: `Frame(format, width, height, bytes, seq)`, `ResizeViewport`, `CameraInput`.
-  - Picking: `Pick(x, y, mode)` → `PickResult(ids, metadata)`.
-  - Queries: `Query(kind, args)` → `QueryResult`.
-  - File: `ListPath`, `OpenDatabase`.
-- **Versioning.** How the client and server negotiate. Forward-compat rules. What to do on mismatch.
-- **Error model.** Fatal vs. recoverable. How server exceptions propagate. How partial results are signaled.
-- **Flow control.** Back-pressure on frames when the client is slow. Dropping vs. queuing.
-- **Sequencing.** Ordering guarantees between commands, state events, and frames.
+Stdio transport is shipped; it newline-delimits the same JSON envelope the RPC transport will length-prefix. What's already proven end-to-end and can be reused:
+
+- **Envelope shape.** `{"type":"request"|"response"|"event"|"hello"|"hello_ack", ...}` — see `Src/server_core.c:139–208` (emitters) and `Src/server_core.c:74–116` (parser).
+- **Handshake.** `ready` → `hello` → `hello_ack` implemented at `Src/server_core.c:449–519`, driven from `Src/viewer.c:3203, 3221`.
+- **Error taxonomy (partial).** `invalid_syntax`, `command_error`, `unknown_command` emitted today; `Src/server_core.c:251–293`.
+- **Reference client.** `pygriz/src/griz/worker.py` (427 lines). Does line-oriented framing, request/response matching by `id`, timeouts, and a background reader thread. The Qt client's network thread needs the same state machine with 4-byte length prefix instead of newline delimitation.
+
+Unshipped on the C side and must land with the RPC transport: framing, binary frames, keepalives, flow control, authentication token check.
+
+## 2. Transport and framing
+
+### 2.1 Carrier
+
+- **Baseline:** plain TCP on `127.0.0.1:<ephemeral>` on the compute or login node. The client reaches it through an SSH local-forward tunnel (see [07-launch-ssh-slurm](07-launch-ssh-slurm.md)). No TLS on the wire — confidentiality comes from the SSH tunnel. The server binds to loopback only; never to a public interface.
+- **Fallback:** `ssh -L` is the only supported transport in v1. Any non-tunneled deployment is considered misconfiguration and the server should refuse (config-level guard, documented in [07-launch-ssh-slurm](07-launch-ssh-slurm.md)).
+- **Single TCP stream** carries all five message classes enumerated in [01-architecture](01-architecture.md) §4. Multiplexing is by message type inside the stream, not by separate channels. Rationale: SSH multiplexing is finicky at some sites; a single stream also avoids head-of-line surprises between command replies and frames (which the protocol orders explicitly anyway).
+
+### 2.2 Framing
+
+Each message is framed as:
+
+```
++---------+--------+-------------------------+
+| 4 bytes | 1 byte | N bytes                 |
+|   N     | kind   | payload                 |
++---------+--------+-------------------------+
+
+N     : big-endian uint32, length of the payload in bytes (excluding
+        the 5-byte prefix). Capped at 16 MiB; frames above this are a
+        protocol error and close the connection.
+kind  : 0x01 = JSON envelope (UTF-8, no trailing newline required).
+        0x02 = binary frame (image / pick-buffer).
+        0x03 = heartbeat (payload is empty or a small timestamp).
+        0x04–0xFF reserved; unknown kinds are a protocol error.
+```
+
+The 4-byte length prefix matches common framing in gRPC length-prefixed messages and is trivial to implement with `read_exact(4)` + `read_exact(N)`. Size cap exists to bound client allocations; large images are split or transported as a sequence of `kind=0x02` frames with an explicit continuation flag inside the binary header (see §3).
+
+**Compression:** none on the JSON kind in v1 (most payloads are small; compression frustrates debugging). Binary frames carry their own codec tag and are already compressed by the codec.
+
+**Why not gRPC / protobuf.** Two reasons the original UI.md §3.3 planned to "decide in prototype" and we now lean against: (a) gRPC's HTTP/2 stack does not play well with some HPC SSH configurations and site audit processes, and (b) the MCP effort has proven that the JSON envelope is expressive enough for every command-surface need and is trivial to mirror in two languages. Keeping RPC JSON-shaped preserves the "one envelope, two transports" invariant. A hand-framed transport wrapping the same JSON is a shorter implementation path and a shorter review.
+
+### 2.3 Authentication
+
+The rendezvous file ([01-architecture](01-architecture.md) §3) carries a 32-byte base64 token. First frame sent by the client after TCP connect must be a JSON envelope of kind `hello` with an added `token` field:
+
+```json
+{ "type": "hello",
+  "client": "griz-client/0.1.0",
+  "min_protocol_version": 1,
+  "max_protocol_version": 1,
+  "token": "VV5KT2Rj…base64…" }
+```
+
+The server validates with a constant-time compare against the token it wrote into the rendezvous file. On mismatch: emit a single error response with `error.code = "protocol_mismatch"` and close the socket after flush. No retry permitted; the client must re-read the rendezvous and reconnect.
+
+Rationale: both ends run as the same UID so this is belt-and-suspenders, but it defends against accidental reuse of a leaked port number by another user on the same host. Constant-time compare prevents trivial timing leaks on a shared login node.
+
+### 2.4 Keepalive
+
+- Client sends a `kind=0x03` heartbeat every 20 s of outbound idle. Payload: 8-byte client-side nanosecond timestamp, echoed verbatim by the server in the next heartbeat so the client can compute RTT.
+- Server sends a `kind=0x03` heartbeat every 20 s of outbound idle.
+- Either side closing the socket on a 60 s silence is acceptable behavior; the opposite end treats this as `session_ending(reason="peer_idle")`.
+
+Heartbeats carry no command semantics and do not affect `state_seq`.
+
+## 3. Binary frames
+
+`kind=0x02` binary frames carry payloads that would be wasteful or impossible inside JSON: rendered frames, pick ID buffers (when dumped for diagnostics), large screenshot results, future video deltas. A binary frame's payload is:
+
+```
++---+---+---+---+---+--------+-------------------+
+| 1 | 1 | 1 | 1 | S | header | body              |
++---+---+---+---+---+--------+-------------------+
+
+byte 0: subtype (0x01=frame, 0x02=screenshot, 0x03=pick_buffer, ...)
+byte 1: codec   (0x00=raw RGBA8, 0x01=jpeg, 0x02=png, 0x03=h264_nal, ...)
+byte 2: flags   (bit0 = continuation, bit1 = keyframe, bit2 = last)
+byte 3: reserved (0)
+bytes 4..4+S-1: variable-length header, JSON-encoded (subtype-specific)
+                with a leading uint16 len S
+bytes 4+S..:    body (opaque to the transport, codec-decoded by consumer)
+```
+
+JSON header carries context the consumer needs without decoding the body (e.g. frame width/height/sequence/timestamp, screenshot request id, pick reply id). This keeps the decode thread cheap: it reads the header, demuxes to the right consumer, hands the body down.
+
+Every binary frame is correlated either to a request id (screenshot, pick reply) or to a server-side sequence counter (rendered frames). See [05-rendering-and-streaming](05-rendering-and-streaming.md) for frame-sequence semantics and [06-picking-and-queries](06-picking-and-queries.md) for pick semantics.
+
+## 4. Flow control and ordering
+
+### 4.1 Ordering guarantees
+
+From [01-architecture](01-architecture.md) §4 and [`../shared/command-protocol.md`](../shared/command-protocol.md) § Pipelining:
+
+- **Command FIFO.** Requests are processed one at a time. Any `state_changed` event caused by command N is emitted before the response for N.
+- **Frames are out-of-band.** Rendered frames interleave freely with responses and events. Clients demux by kind.
+- **Pick reply after input frame.** When the client sends a pick RPC, the server replies after rendering (or hit-testing) against the most recently committed state. No guarantee the pick hits the very frame the user clicked on — the client must tolerate up to one state step of skew. Practically, the server holds the last ID buffer for the currently-displayed frame and answers from it (see [06-picking-and-queries](06-picking-and-queries.md)).
+
+### 4.2 Back-pressure
+
+Three TCP-level queues and one application queue matter:
+
+1. **Client → server** (commands, heartbeats): tiny, bounded by user input rate. If the server's read is slow, the kernel's SO_SNDBUF applies back-pressure onto the client network thread — acceptable.
+2. **Server → client** (responses, events, frames): this is the one that can fill. Policy:
+   - Responses and events are written unconditionally; they are small and the client must always be ready to consume them.
+   - Rendered frames are **dropped at the source** when the outgoing socket's buffer is full. The render thread produces into a single-slot mailbox consumed by the I/O thread; a new frame replaces the pending one rather than queueing (`latest-wins`). This is what allows a 1 FPS link to remain responsive on a 60 FPS render.
+3. **Client decode queue**: single-slot mailbox between network thread and decode thread, same `latest-wins` semantics.
+
+The server signals "I dropped frames" by including a monotonic `frame_seq` on every rendered frame; a gap tells the client it missed frames. The client does not ask for retransmission — frames are ephemeral.
+
+### 4.3 Cancellation (deferred)
+
+Long-running commands (`anim`, state sweeps, full-mesh `outrgb`) cannot be interrupted today. The open question in [`../shared/command-protocol.md`](../shared/command-protocol.md) — a `{"type":"cancel", "id":"<outstanding-id>"}` request — stays open here and is deferred past v1.
+
+## 5. Versioning
+
+Follows [`../shared/command-protocol.md`](../shared/command-protocol.md) § Handshake exactly:
+
+- Protocol version lives at `Src/server_core.c:21` (`GRIZ_PROTOCOL_VERSION "1.0"`). This constant is what the `ready` event reports and what `hello_ack` matches against.
+- Client sends `min_protocol_version` / `max_protocol_version`; server picks the highest mutually supported.
+- Mismatch → `error.code = "protocol_mismatch"` response, then the server closes the socket. **No downgrade, no feature-flag haggling in v1.**
+- A version bump is required for: new error code, new event type, changed schema shape in a `q_*` response (additive optional keys do not require a bump; removing or renaming does).
+
+When the first `state_changed` event or first `q_selection` implementation lands on the server, the protocol version stays at 1.0 provided the additions are advertised via `protocol_features` in the `ready` envelope. If a feature the client **requires** is absent, the client refuses to connect with a clear error.
+
+## 6. Error propagation
+
+Per [`../shared/command-protocol.md`](../shared/command-protocol.md) § Error taxonomy, all errors from commands flow as `response.status="error"` with a typed `error.code`. Transport-level problems (framing errors, size-cap violations, auth failure, protocol-version mismatch) map to one of the existing codes — primarily `protocol_mismatch` for the auth/version cases and `internal_error` for malformed framing — and close the connection.
+
+Partial results: not supported. A command either succeeds with its full `data` payload, or errors. Server-side streaming-result commands (none today; potentially future `animate` with per-state progress) would need a new message type and a protocol-version bump.
+
+## 7. Prototype plan
+
+Land RPC as a strict lift of the stdio path. Concrete steps once [03-server](03-server.md) decomposition ships:
+
+1. Extract the current stdio loop body from `Src/viewer.c:3205–3279` into a transport-neutral `server_core_dispatch()` that consumes a `ServerRequest` and writes a `ServerResponse` to an opaque sink.
+2. Add `Src/server_rpc.c` that: binds, writes the rendezvous file, accepts, reads framed messages, calls the common dispatcher, and writes framed responses. No threading yet — single-threaded RPC is a valid v0.
+3. Add length-prefixed I/O helpers; reuse cJSON for envelope (de)serialization.
+4. Port `pygriz_mcp/tests/test_smoke.py` to run against `--transport=rpc` — proves envelope parity.
+5. Layer in heartbeats, size caps, token check.
+6. Introduce the render/command/I-O thread split from [01-architecture](01-architecture.md) §6 only once single-threaded RPC is solid.
 
 ## Open questions
 
-- gRPC inside SSH: any known pain at real HPC sites?
-- Protobuf schema location: in-tree `.proto` or separate repo?
-- Do we need an out-of-band control channel (e.g., cancel a long-running command)?
+- **gRPC revisit?** Choice is tentatively "hand-framed JSON." Revisit if (a) pick replies + frames prove to want a real streaming RPC abstraction, or (b) a second consumer (e.g. a web client) appears.
+- **UDP path for frames on high-latency WAN?** Image streaming over TCP over SSH is known to stall on packet loss. A v2 option of a separately-authenticated UDP channel for frames (commands stay on TCP) is worth exploring after WAN latency measurements in Phase 0.
+- **Size cap tuning.** 16 MiB per frame is generous for a 4K JPEG but tight for lossless screenshots of large viewports. Either raise the cap for the screenshot subtype only, or force screenshot bodies to split into continuation frames.
+- **Binary-in-JSON fallback.** MCP stdio clients today cannot receive binary frames inline. When the `screenshot` command becomes a first-class response (not a disk write), stdio needs a base64 path. A mirror question exists for RPC clients that prefer JSON-only.

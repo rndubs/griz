@@ -63,6 +63,6 @@ If a UI-specific doc needs something that also concerns MCP, promote it into `sh
 
 | Plan | Status |
 |------|--------|
-| `UI.md` | Drafted. Detailed design underway in `ui-design/`; only `01-architecture.md` is past stub. |
-| `MCP.md` | Drafted, updated to adopt shared components. |
-| `shared/` | Drafted. Consumed by both plans. |
+| `UI.md` | Drafted. All eleven `ui-design/` docs now drafted with references to the shipped server and Python layer. Implementation not started. |
+| `MCP.md` | Drafted; MVP shipped (see `MCP.md` § 0 Implementation Status). |
+| `shared/` | Drafted. Each doc carries a **Current state** section that tracks what's shipped in `Src/server_*.c` and the Python layer vs. still aspirational. |

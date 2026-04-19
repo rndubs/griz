@@ -6,6 +6,29 @@ Defines the message envelope, event catalog, handshake, version negotiation, and
 
 The rule: every transport-carried message has the same JSON shape. Only the framing differs.
 
+## Current state (2026-04)
+
+Over stdio the envelope is **shipped and exercised** by the pygriz worker and the MCP adapter. Over RPC nothing is wired yet — when the transport lands it must speak the same JSON shapes described below. Concretely:
+
+| Message | Status | Where |
+|---------|--------|-------|
+| `request` (JSON or raw line) | shipped | `server_parse_request()` at `Src/server_core.c:74–116`. Raw-line shortcut implemented; JSON detected by `{ `-prefix heuristic. |
+| `response` (ok / error, with `stdout` / `stderr` / `data`) | shipped | `server_emit_response()` `Src/server_core.c:139–157`; `server_emit_data_response()` `:160–185`; `server_emit_error()` `:188–208`. |
+| `event: ready` | shipped | `server_emit_ready()` `Src/server_core.c:449–462`. Payload: `{"type":"event","event":"ready","version":"1.0","server":"griz-server"}` — not yet the richer envelope (`protocol_features`, `session_id`, `capabilities`) described below. |
+| `hello` / `hello_ack` | shipped | `server_try_hello()` `Src/server_core.c:465–519`. Major-version match; minor mismatches set `compatible:false` in the ack but don't abort. |
+| `event: state_changed` | **not implemented** | No `notify_state()`, no `state_seq` counter, no emission site. Pull-only via `q_*` today. |
+| `event: session_ending` | **not implemented** | No SIGTERM handler; stdin-close is the only clean exit path. |
+| `hello` payload | shape-mismatch | Current client sends `{"type":"hello","version":"..."}` (string) rather than the `min_protocol_version` / `max_protocol_version` pair described in § Handshake below. Good enough to land; will be revisited when the UI client brings range negotiation. |
+| Error taxonomy codes | partial | Implemented codes: `invalid_syntax`, `command_error`, `unknown_command` (see `Src/server_core.c:251–293`). `bad_arguments`, `no_database`, `database_error`, `render_error`, `resource_limit`, `not_supported`, `protocol_mismatch`, `internal_error` are named in the doc but not yet emitted by the code. |
+| Response `data` for query commands | shipped | `server_emit_data_response()` routes `q_*` responses; see [`query-commands.md`](query-commands.md). |
+| Binary data in responses | **not implemented** | `screenshot` today goes via the `outrgb` command writing an SGI file to disk; pygriz converts to PNG in Python (`pygriz/src/griz/_sgi.py`). Inline bytes on the envelope remain an open question. |
+
+Reference consumers of the current protocol:
+
+- **Python worker** — `pygriz/src/griz/worker.py` (427 lines). Spawns `griz-server --transport=stdio`, waits for `ready`, performs hello/ack, then does request/response over stdio. Handles timeouts, stderr draining, terminator commands.
+- **MCP adapter** — `pygriz_mcp/src/griz_mcp/server.py`. Exposes 15 MCP tools on top of pygriz.
+- **Smoke tests** — `pygriz_mcp/tests/test_smoke.py` (14 tests) round-trip through the full MCP → pygriz → `griz-server` stack. These are the de facto protocol-conformance suite until a dedicated one is built.
+
 ## Related
 
 - [`server-binary.md`](server-binary.md)

@@ -26,6 +26,17 @@ This folder holds the detailed design sketches for the Griz UI modernization eff
 | 10 | [Testing](10-testing.md) | Test pyramid, fixtures, HPC end-to-end |
 | 11 | [Migration](11-migration.md) | Coexistence with Motif, deprecation path |
 
+## Status (2026-04)
+
+All eleven docs are drafted. Each opens with a **Current state** section that anchors the design to what's shipped in `Src/` and the Python layer; `Src/server_*.c` and `pygriz/src/griz/worker.py` are the concrete reference points the Qt client builds on. Concretely:
+
+- Docs 01, 02, 03 together define the full v1 server/client contract. Protocol framing (02) and the three-thread server (03) are the critical-path implementation targets.
+- Docs 05 and 06 depend on the protocol; both reference the shipped OSMesa and interpret.c paths they extend.
+- Docs 07 and 08 are largely independent of the rest — launch and Motif audit can progress in parallel with core work.
+- Docs 09, 10, 11 — build/CI, testing, migration — consume and don't block the design work.
+
+Each doc's **Open questions** section flags remaining decisions.
+
 ## Order of attack (suggested)
 
 Rough dependency ordering for filling these out:

@@ -9,6 +9,19 @@ Fixes the single source of truth for the mapping from human-readable result name
 
 Having the map in one place prevents the two front ends from drifting in what they expose or what they call things.
 
+## Current state (2026-04)
+
+| Piece | Status | Where |
+|-------|--------|-------|
+| Canonical YAML | **shipped** | `Src/data/results_map.yaml`. Structure matches [§ File format](#file-format). |
+| Python loader | **shipped** | `pygriz/src/griz/results_map.py` (166 lines). `resolve(field, component) → griz_name`, alias index, `default_map()` lazy singleton. Test coverage: `pygriz/tests/test_results_map.py` (51 tests). |
+| Env override | **shipped** | `GRIZ_RESULTS_MAP` env var re-points the Python loader at a custom YAML, for dev iteration. |
+| Wheel packaging | **shipped** | `results_map.yaml` is shipped inside the `griz` wheel via `importlib.resources` on `griz.data`. |
+| Server-side loader | **not implemented** | `q_results` currently returns the terse Griz names directly from the primal/derived hash tables (`server_build_results_from_htable()`, `Src/results.c`). Human-readable translation happens client-side. |
+| Generated C header | **not implemented** | No `Src/data/generate_results_map_header.py`, no `results_map.h`. |
+| Qt client loader | **not yet needed** | Qt client does not exist. When it lands it should `yaml-cpp` against the same YAML. |
+| CI lints | **not implemented** | No linter validating uniqueness of primary keys / aliases yet. |
+
 ## Related
 
 - [`../MCP.md`](../MCP.md) §5.4 (original hand-curated dict).

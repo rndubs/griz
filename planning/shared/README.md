@@ -14,6 +14,22 @@ The purpose is to avoid two independent implementations of the same wrapper laye
 | [query-commands.md](query-commands.md) | Canonical `q_*` query commands and the state-dict schema they return (reused by UI state events). |
 | [results-map.md](results-map.md) | Single source of truth for the `(field, component) → griz result name` mapping, shipped as a data file and consumed by both the Python package and the Qt client. |
 
+## Status at a glance (2026-04)
+
+Every doc in this folder now carries a **Current state** section flagging which pieces are shipped vs. still aspirational. Summary:
+
+| Topic | Stdio path | RPC path |
+|-------|------------|----------|
+| Server binary | ✅ `griz-server --transport=stdio` built and exercised by pygriz/MCP | ❌ hard-coded "not implemented yet" at `Src/server_main.c:96` |
+| Envelope (request / response / ready / hello) | ✅ shipped | — (will reuse same JSON) |
+| Output capture | ✅ fd-level `dup2`, 256 KB cap | — (same) |
+| Query commands | ⚠️ 5 of 8 (`q_state`, `q_view`, `q_time`, `q_materials`, `q_results`); subsets of schema | — |
+| `state_changed` events | ❌ not emitted | — |
+| `session_ending` event + SIGTERM | ❌ not implemented | — |
+| Results-map YAML | ✅ `Src/data/results_map.yaml`, Python loader | — (Qt loader pending) |
+
+The detailed per-doc state sections carry concrete `Src/` file:line references and should be kept in sync when code lands.
+
 ## Invariants these docs share
 
 - **S1. One server binary.** `griz-server` is the only new binary. Both transports live behind a single `--transport=` flag. Legacy `griz` and `griz_batch` are unchanged.

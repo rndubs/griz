@@ -29,13 +29,15 @@ Rather than auditing and replacing every `printf`/`fprintf` call site with a new
 
 The key functions live in `Src/server_core.c`:
 
-- **`server_capture_begin()`** — called before each command dispatch. Saves the real stdout/stderr file descriptors, then `dup2`s stdout and stderr onto temporary files (`tmpfile()`). All subsequent writes to fd 1 and fd 2 go to the temp files.
+- **`server_capture_begin()`** (`Src/server_core.c:310–400`) — called before each command dispatch. Saves real stdout/stderr fds via `dup()`, then `dup2`s `tmpfile()` descriptors onto fds 1 and 2. All subsequent writes go to the temp files.
 
-- **`server_capture_end()`** — called after each command returns. Restores the original stdout/stderr via `dup2`, then drains the temp files and copies their contents into the JSON response's `stdout` and `stderr` fields. Capture is capped at **256 KB per stream** with an `…[truncated]` sentinel.
+- **`server_capture_end()`** (`Src/server_core.c:402–446`) — called after each command returns. Restores the original stdout/stderr via `dup2`, drains the temp files, and returns the captured strings to the caller for embedding into the response envelope. Cap: **256 KB per stream** (`SERVER_CAPTURE_MAX` at `Src/server_core.c:310`); on overflow the captured text is suffixed with `…[truncated]\n`.
+
+Wired into the dispatch loop at `Src/viewer.c:3254–3277`: `clear → begin → parse_command → end → emit`.
 
 ### `popup_dialog` integration
 
-In server mode (`GRIZ_SERVER_BUILD`), `popup_dialog` calls `server_record_error()` to translate dialog types into structured error responses:
+In server mode (`GRIZ_SERVER_BUILD`), `popup_dialog` calls `server_record_error()` (`Src/server_core.c:215–293`) to translate dialog types into structured error responses. Only the **first** diagnostic per command is retained (`Src/server_core.c:256`); subsequent calls are ignored. The command loop calls `server_clear_error()` / `server_peek_error()` around each `parse_command()` to pick this up (`Src/viewer.c:3254, 3265`):
 
 | Dialog type | Error code | Behavior |
 |-------------|-----------|----------|

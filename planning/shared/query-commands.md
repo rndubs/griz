@@ -9,6 +9,47 @@ Defines the set of read-only `q_*` commands that expose structured viewer state,
 
 One schema, two delivery modes.
 
+## Current state (2026-04)
+
+| Command | Status | Implementation | Gap vs. schema below |
+|---------|--------|----------------|----------------------|
+| `q_state` | **shipped** | `build_q_state_data()` at `Src/viewer.c:2993–3017` | Returns `time` + `viewport` + `current_field` + `result_title` only — far from the full schema. No `database`, no `render`, no `selection`, no `materials` inline, partial `results`. |
+| `q_time` | **shipped** | `build_q_time_data()` `Src/viewer.c:2955–2977` | Matches schema: `state`, `state_max`/`state_count`, `time`/`max_time`. |
+| `q_view` | **shipped (subset)** | `build_q_view_data()` `Src/viewer.c:2980–2990` | Returns `viewport: {width, height}` only. Missing `rotate`, `translate`, `scale`, `zoom`. |
+| `q_materials` | **shipped (subset)** | `build_q_materials_data()` `Src/viewer.c:3020–3045` | Returns `{id, visible, enabled}` per material. Missing `label`, `color`, and per-material `n_elements`. |
+| `q_results` | **shipped** | `build_q_results_data()` `Src/viewer.c:3048–3076`, iterating primal + derived hash tables via `server_build_results_from_htable()` (`Src/results.c`). | Returns terse Griz names (e.g. `sx`, `seff`) rather than human-readable `(field, component)` pairs. The results-map translation happens Python-side (`pygriz/src/griz/results_map.py`) today. |
+| `q_selection` | **not implemented** | — | — |
+| `q_render` | **not implemented** | — | — |
+| `q_database` | **not implemented** | — | — |
+
+The dispatcher that routes these bypasses `parse_command()` and emits a `response` with a populated `data` field directly: `server_try_query()` at `Src/viewer.c:3082–3116`.
+
+The `state_changed` event stream described in [§ State-changed event shape](#state-changed-event-shape) is **not yet implemented** — there is no `notify_state()`, no `state_seq` counter, and no emission site. Today's clients rely on pull (re-querying `q_*`) after any command that might mutate state.
+
+### Design drift to revisit
+
+The current `q_state` payload shape is close to, but not identical to, the schema in this doc. Example from a live `q_state` response:
+
+```json
+{"type":"response","id":"req_1","status":"ok","stdout":"","stderr":"","data":{
+  "time": {"time_state":1,"max_time_state":71,"state_count":71,
+           "time_value":0.0,"max_time_value":0.001},
+  "viewport": {"width":1024,"height":1024},
+  "current_field": null,
+  "result_title": ""
+}}
+```
+
+Key drifts from the target schema:
+
+- `time_state` vs. `state` (current vs. schema).
+- `max_time_state` vs. `state_max`. (`state_count` also present.)
+- `time_value` / `max_time_value` vs. `time` / (implicit). No `state_min` reported.
+- `viewport` is at the top level rather than nested under `view`.
+- `current_field` / `result_title` vs. `results: {active: {...}}`.
+
+Before the Qt client consumes these, the C side should either adopt the schema as documented or the documented schema should migrate to match the code. Recommended direction: **match the documented schema**, since it was designed to round-trip with the `state_changed` diff event and to nest cleanly under sub-object queries (`q_time`, `q_view`). Follow-on ticket.
+
 ## Related
 
 - [`server-binary.md`](server-binary.md)

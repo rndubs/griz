@@ -22,6 +22,25 @@ griz-server --transport=rpc    [griz options...]   # used by Qt client over TCP/
 
 `stdio` and `rpc` share the entire C code path above the transport layer: the same dispatcher wraps `parse_command()`, the same output-sink indirection ([`output-capture.md`](output-capture.md)) feeds the response envelope, and the same `q_*` query commands ([`query-commands.md`](query-commands.md)) produce the same state payload.
 
+## Current state (2026-04)
+
+| Piece | Status | Where |
+|-------|--------|-------|
+| `griz-server` binary target | **shipped** | `Src/Makefile.Library` `server_opt` target; output at `Src/GRIZ4-*/bin_server_opt/griz-server`. Built via `./build.sh server`. |
+| `main()` and flag parsing | **shipped** | `Src/server_main.c` (105 lines). Accepts `--transport={stdio,rpc}`, `-i PATH`, `-w W H`, `-h/--help`. |
+| stdio transport | **shipped** | `process_server_mode_stdio()` in `Src/viewer.c:3118–3302`. Dispatches requests via `parse_command()`, wraps responses with `server_core.c` helpers. |
+| rpc transport | **stub** — hard-exits with "not implemented yet" at `Src/server_main.c:96–100`. |
+| Compile gate | **shipped** | `-DGRIZ_SERVER_BUILD` defined only for `server_opt`; gates `Src/viewer.c:2901` server block and `Src/server_core.c` entirely. |
+| JSON framing / cJSON | **shipped** | cJSON vendored at `Src/ext/cJSON/`; linked into `SERVER_OBJS`. |
+| Ready event on startup | **shipped** | `server_emit_ready()` at `Src/server_core.c:449–462`; called just before the dispatch loop (`Src/viewer.c:3203`). |
+
+### Deviations from the design above
+
+- **No `server_stdio.c` / `server_rpc.c` split.** Current transport code for stdio lives inline in `Src/viewer.c:3118–3302` (`process_server_mode_stdio`). The planned split still makes sense once RPC is added — see [`../ui-design/03-server.md`](../ui-design/03-server.md) for the proposed refactor. `Src/server_core.c` already plays the role of a shared `server_core`.
+- **Flags not yet accepted:** `--bind=HOST:PORT`, `--rendezvous=PATH`, `--protocol-version=N`. A `--port=N` flag is parsed and silently ignored (`Src/server_main.c:65–67`). These are all RPC-specific and land with the RPC transport.
+- **No SIGTERM handler** and **no `session_ending` event emission** yet. The stdio loop terminates on stdin close or a `quit`/`exit`/`end` command; OSMesa/Analysis teardown is deliberately punted to process exit (`Src/viewer.c:3292–3299`).
+- **Server reuses `serial_batch_mode = TRUE`** (`Src/viewer.c:3156`) instead of a dedicated mode flag; code paths that gate on "no X11" behave correctly. A clean rename to a dedicated `server_mode` flag is a nice-to-have, not a blocker.
+
 ## Conflict resolution
 
 The two plans originally named this differently:

@@ -198,23 +198,24 @@ Detailed design is underway in [`ui-design/`](ui-design/). The folder contains o
 
 | # | Doc | Status |
 |---|-----|--------|
-| 01 | [Architecture](ui-design/01-architecture.md) | **Drafted.** Pins component names (`griz-client`, `griz-server`), no separate launcher, rendezvous-file bootstrap with 32-byte token, three-thread server and client models, and invariants I1–I8 that anchor every downstream doc. |
-| 02 | [Protocol](ui-design/02-protocol.md) | Stub. Next up. |
-| 03 | [Server](ui-design/03-server.md) | Stub. Next up. |
-| 04 | [Client](ui-design/04-client.md) | Stub. Next up. |
-| 05 | [Rendering & streaming](ui-design/05-rendering-and-streaming.md) | Stub. |
-| 06 | [Picking & queries](ui-design/06-picking-and-queries.md) | Stub. |
-| 07 | [Launch (SSH + SLURM)](ui-design/07-launch-ssh-slurm.md) | Stub. |
-| 08 | [Feature parity](ui-design/08-feature-parity.md) | Stub. |
-| 09 | [Build, packaging & CI](ui-design/09-build-packaging-ci.md) | Stub. |
-| 10 | [Testing](ui-design/10-testing.md) | Stub. |
-| 11 | [Migration](ui-design/11-migration.md) | Stub. |
+| 01 | [Architecture](ui-design/01-architecture.md) | **Drafted.** Pins component names (`griz-client`, `griz-server`), no separate launcher, rendezvous-file bootstrap with 32-byte token, three-thread server and client models, invariants I1–I8. |
+| 02 | [Protocol](ui-design/02-protocol.md) | **Drafted.** Length-framed transport on top of the shipped JSON envelope; binary-frame sub-protocol; token auth; keepalives; back-pressure. |
+| 03 | [Server](ui-design/03-server.md) | **Drafted.** Starts from today's shipped stdio server; pins TU refactor (server_stdio/_rpc/_query/_events), three-thread model, full `q_*` catalog, `notify_state`, SIGTERM handling, and a 10-step TODO. |
+| 04 | [Client](ui-design/04-client.md) | **Drafted.** Qt 6 layout, `SessionState` model, command console, viewport, selection UI, threading. Explicit Python → Qt translation table using `pygriz/worker.py` as the reference implementation. |
+| 05 | [Rendering & streaming](ui-design/05-rendering-and-streaming.md) | **Drafted.** Reuses the shipped OSMesa path; JPEG v1 / H.264 v2; LOD policy during drag; screenshot in-memory PNG; minimal `draw.c` changes. |
+| 06 | [Picking & queries](ui-design/06-picking-and-queries.md) | **Drafted.** `pick_at` command, ID-buffer pass, selection state, metadata queries, multi-select derivations, 10-step implementation order. |
+| 07 | [Launch (SSH + SLURM)](ui-design/07-launch-ssh-slurm.md) | **Drafted.** Host profiles (TOML schema), three launch methods (direct/slurm/preallocated), rendezvous read-over-ssh, system-SSH by default, tunneling, SLURM UI, reconnect. |
+| 08 | [Feature parity](ui-design/08-feature-parity.md) | **Drafted.** Motif audit framework + seed table (~30 rows). Material manager called out as standalone item. |
+| 09 | [Build, packaging & CI](ui-design/09-build-packaging-ci.md) | **Drafted.** Server build is already shipped in `Src/Makefile.Library`; client build is new (CMake + Qt + Conan); CI matrix; release signing. |
+| 10 | [Testing](ui-design/10-testing.md) | **Drafted.** Pyramid with the existing 14-smoke-test suite from `pygriz_mcp/tests/test_smoke.py` as the protocol-conformance seed. |
+| 11 | [Migration](ui-design/11-migration.md) | **Drafted.** Phase 1/2/3 gates, rollback path, script-compatibility guarantee, deprecation schedule. |
 
 ### Immediate next tasks
 
-1. Flesh out `02-protocol.md`, `03-server.md`, and `04-client.md` — all three take their pinned decisions from `01-architecture.md` and together define the v1 contract.
-2. Then `05-rendering-and-streaming.md` and `06-picking-and-queries.md`, which depend on the protocol.
-3. Then `07-launch-ssh-slurm.md`, followed by the operational docs (`08`–`11`).
-4. Open questions accumulated in each doc should be triaged before code work begins.
+1. Close open questions per doc (each has an explicit **Open questions** section).
+2. Begin implementation work on the highest-value server extensions from [`ui-design/03-server.md`](ui-design/03-server.md) §9:
+   - **Steps 1–5** (extract server TUs from `Src/viewer.c`, fill out `q_*` payloads, add `state_changed` events) benefit both the UI and MCP efforts and do not require RPC yet.
+   - **Steps 6–10** (RPC transport, thread split, SIGTERM, picking, frame push) are the RPC-specific critical path for Phase 1.
+3. Scaffold `client/` (CMake + Qt) per [`ui-design/04-client.md`](ui-design/04-client.md) §2 and [`ui-design/09-build-packaging-ci.md`](ui-design/09-build-packaging-ci.md) §3. Variant A (local all-in-one) is the right iteration loop before SSH+SLURM ships.
 
 No implementation work starts until the relevant design doc is reviewed.
