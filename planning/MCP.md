@@ -40,15 +40,17 @@ Top-level progress tracker. Detailed design for each topic lives in
 
 ### Phase 3 — Python API package ([03](mcp/03-python-api.md), [06](mcp/06-results-mapping.md), [08 §2.3](mcp/08-phasing.md))
 
-- [ ] `Griz` class with context manager (`__enter__` / `__exit__`)
-- [ ] `field` namespace (`show`, `list`, `info`)
-- [ ] `view` namespace (`rotate`, `translate`, `scale`, `zoom`, `reset`)
-- [ ] `time` namespace (`set_state`, `set_time`, `animate`)
-- [ ] `materials` namespace (`hide`, `show`, `list`)
-- [ ] Top-level: `select`, `highlight`, `clear_picks`, `screenshot`, `state`, `raw`
-- [ ] `Src/data/results_map.yaml` and YAML loader
-- [ ] Unit tests with mocked worker (>90% coverage)
-- [ ] `pyproject.toml` and pip-installable from `Src/python/griz/`
+- [x] `Griz` class with context manager (`__enter__` / `__exit__`) *(in `pygriz/src/griz/session.py`; lazy worker spawn on first `open()`, `close()` / `__exit__` tear down; `reload()` closes + reopens; `worker_factory` kwarg lets tests inject a mock.)*
+- [x] `field` namespace (`show`, `list`, `info`) *(`field.show` resolves through `ResultsMap` and drives `show <griz-name>`. `field.list` / `field.info` issue `q_results` / `q_result_info` — both surface `GrizCommandError(code="unknown_command")` until server-side queries land, see Phase 4 gating below.)*
+- [x] `view` namespace (`rotate`, `translate`, `scale`, `zoom`, `reset`) *(wraps `rx`/`ry`/`rz`, `tx`/`ty`/`tz`, `scale`, and `rview`; `zoom` is an alias for `scale`.)*
+- [x] `time` namespace (`set_state`, `set_time`, `animate`) *(also `next` / `prev`; `animate()` walks the state range locally with an optional delay and returns per-frame state dicts, supports negative step.)*
+- [x] `materials` namespace (`hide`, `show`, `list`) *(uses `vis` / `invis` commands; `list` / `show_only` depend on `q_materials` — not yet implemented server-side, will raise until it lands.)*
+- [x] Top-level: `select`, `highlight`, `clear_picks`, `screenshot`, `state`, `raw` *(`select`/`hilite`/`clrhil` wrappers; `screenshot()` uses `outrgb` and returns path or bytes; `state()` calls `q_state`; `raw()` returns the full response dict and passes through the optional timeout.)*
+- [x] `Src/data/results_map.yaml` and YAML loader *(canonical YAML lives in `Src/data/`; `pygriz/src/griz/data/results_map.yaml` is a symlink so hatch ships the real file in the wheel. Loader lives in `griz/results_map.py` with `default_map()` as a lazy singleton; `GRIZ_RESULTS_MAP` env var overrides the bundled copy for testing.)*
+- [x] Unit tests with mocked worker (>90% coverage) *(non-worker coverage ≥93% per module: `__init__` 100%, `exceptions` 100%, `field` 100%, `view` 100%, `selection` 100%, `materials` 97%, `time_` 97%, `results_map` 94%, `session` 93%. 51 new unit tests in `tests/test_results_map.py` + `tests/test_session.py`; mock worker at `tests/mock_worker.py` is a no-subprocess stand-in used for behavioral coverage.)*
+- [x] `pyproject.toml` and pip-installable from `pygriz/` *(package name `llnl-griz`, imports as `griz`. `pyproject.toml` adds `pyyaml>=6.0` and a `test` extra with `pytest-cov`. `tool.hatch.build.targets.wheel.force-include` maps the symlinked YAML into the wheel. Note: lives at `pygriz/` rather than `Src/python/griz/` to keep Python out of the C autotools tree; promoting to `Src/python/griz/` is a Phase 5 packaging concern.)*
+
+Gated on Phase 2 server work (tracked under shared/query-commands.md): `field.list`, `field.info`, `materials.list`, `materials.show_only` all depend on server-side `q_results` / `q_result_info` / `q_materials` which are not yet implemented. They are wired through so the method surface matches the design; they raise `GrizCommandError(code="unknown_command")` until the queries land.
 
 ### Phase 4 — MCP adapter ([04](mcp/04-mcp-adapter.md), [08 §2.4](mcp/08-phasing.md))
 

@@ -1,0 +1,65 @@
+# Src/data/results_map.yaml
+# Maps human-readable (field, component) pairs to Griz command-language names.
+# Single source of truth; consumed by pygriz/ (Python API) and, eventually,
+# the Qt client. See planning/shared/results-map.md for the schema.
+
+schema_version: 1
+
+fields:
+
+  stress:
+    description: "Cauchy stress tensor components and invariants."
+    unit: "stress"
+    components:
+      xx:         { griz: "sx",    label: "sxx" }
+      yy:         { griz: "sy",    label: "syy" }
+      zz:         { griz: "sz",    label: "szz" }
+      xy:         { griz: "sxy",   label: "sxy" }
+      yz:         { griz: "syz",   label: "syz" }
+      zx:         { griz: "szx",   label: "szx" }
+      von_mises:  { griz: "seff",  label: "von Mises", aliases: ["vm", "mises"] }
+      pressure:   { griz: "spres", label: "pressure" }
+
+  strain:
+    description: "Infinitesimal strain tensor."
+    unit: "dimensionless"
+    components:
+      xx: { griz: "exx", label: "exx" }
+      yy: { griz: "eyy", label: "eyy" }
+      zz: { griz: "ezz", label: "ezz" }
+      xy: { griz: "exy", label: "exy" }
+      yz: { griz: "eyz", label: "eyz" }
+      zx: { griz: "ezx", label: "ezx" }
+
+  temperature:
+    description: "Nodal temperature scalar."
+    unit: "temperature"
+    scalar: true
+    griz: "temp"
+
+  displacement:
+    description: "Nodal displacement vector and magnitude."
+    unit: "length"
+    components:
+      x:         { griz: "ux",   label: "ux" }
+      y:         { griz: "uy",   label: "uy" }
+      z:         { griz: "uz",   label: "uz" }
+      magnitude: { griz: "umag", label: "|u|", aliases: ["mag"] }
+
+  velocity:
+    description: "Nodal velocity vector and magnitude."
+    unit: "velocity"
+    components:
+      x:         { griz: "vx",   label: "vx" }
+      y:         { griz: "vy",   label: "vy" }
+      z:         { griz: "vz",   label: "vz" }
+      magnitude: { griz: "vmag", label: "|v|", aliases: ["mag"] }
+
+  acceleration:
+    description: "Nodal acceleration vector and magnitude."
+    unit: "acceleration"
+    components:
+      x:         { griz: "ax",   label: "ax" }
+      y:         { griz: "ay",   label: "ay" }
+      z:         { griz: "az",   label: "az" }
+      magnitude: { griz: "amag", label: "|a|", aliases: ["mag"] }
