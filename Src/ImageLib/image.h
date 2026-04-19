@@ -14,9 +14,19 @@ extern "C" {
  */
 
 #include <stdio.h>
+#include <stdint.h>
 
 /*
  * Portability types for 64-bit architectures.
+ *
+ * SIGNED_4BYTE / UNSIGNED_4BYTE are used for on-disk header fields
+ * (min, max, wastebytes, colormap, rowstart[], rowsize[]) and are
+ * baked into the offset arithmetic inside cvtimage() in open.c
+ * (e.g. `cvtlongs(buffer+26, 4)` assumes these are exactly 4 bytes).
+ * The default `unsigned long` typedef below produces 8-byte types on
+ * 64-bit Linux and causes cvtimage() to write past the end of the
+ * IMAGE struct, corrupting the malloc heap and aborting the next
+ * free() in iclose(). Fix: pin to int32_t / uint32_t on Linux.
  */
 #ifdef __alpha
 #define ULONG_TYPE
@@ -31,8 +41,11 @@ extern "C" {
 #define SIGNED_4BYTE int
 #define DO_REVERSE 0
 #endif
-    
+
 #ifdef __linux
+#define ULONG_TYPE
+#define UNSIGNED_4BYTE uint32_t
+#define SIGNED_4BYTE   int32_t
 #define DO_REVERSE 1
 #define _IOEOF          0020    /* EOF reached on read */
 #define _IOERR          0040    /* I/O error from system */
