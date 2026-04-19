@@ -24,19 +24,19 @@ Top-level progress tracker. Detailed design for each topic lives in
 - [x] OSMesa rendering works headlessly in server mode (verified via `outrgb` producing a valid SGI image at the requested dimensions)
 - [ ] `outpng` produces valid PNG files from server mode *(blocked: default configure uses `--enable-nopng`; needs a build with PNG support)*
 - [x] Minimal Python `Worker` spawns server and sends commands *(uv-managed package `llnl-griz` at `pygriz/`, importable as `griz`; `Worker` waits for the `READY` sentinel, drains stdout/stderr in background threads, sends plain-text commands, and shuts down via `quit`. Verified by `pygriz/tests/test_worker.py` — 5 passing)*
-- [x] Clean shutdown with no resource leaks on the command-loop exit path *(image-write paths inherit a pre-existing batch-mode `double free or corruption` abort in `outrgb`; reproduces on `griz4s.linux_opt_batch` too and is not a server-mode regression — track in Phase 2 output-capture work)*
+- [x] Clean shutdown with no resource leaks on the command-loop exit path *(was blocked by a `double free or corruption` abort in `outrgb`; root cause: `ImageLib` typedefs `SIGNED_4BYTE`/`UNSIGNED_4BYTE` as `long` on Linux, which expands to 8 bytes on 64-bit, and `cvtimage()` in `Src/ImageLib/open.c` used hard-coded `buffer+26` offsets that assumed 4-byte values. That write landed past the end of the `IMAGE` struct and corrupted the malloc heap, aborting in the next `free()`. Fixed in `Src/ImageLib/image.h` by pinning those typedefs to `int32_t`/`uint32_t` on `__linux`; batch + server both exit cleanly now.)*
 - [x] End-to-end smoke test passes for stdin command loop + state navigation + RGB screenshot; full image-format coverage gated on the two items above
 
 ### Phase 2 — JSON protocol & output capture ([02](mcp/02-server-binary.md), [05](mcp/05-protocol.md), [08 §2.2](mcp/08-phasing.md))
 
-- [x] JSON request/response envelope (cJSON integration) *(cJSON 1.7.19 vendored at `Src/ext/cJSON/`; `server_core.{c,h}` wraps request parsing + response emission; `process_server_mode_stdio` accepts both raw lines and `{"type":"request",...}` and emits one response line per command. `stdout`/`stderr` fields are empty placeholders until the output-capture item lands. Verified by `pygriz/tests/test_worker.py::test_json_envelope_{response,rejects_malformed}`)*
-- [ ] Handshake sequence (`ready` → `hello` → `hello_ack`)
-- [ ] `griz_out()` / `griz_err()` sink indirection implemented
-- [ ] Audit & replace `printf` / `fprintf(stdout,…)` on batch paths
-- [ ] Structured error taxonomy with `code` field
-- [ ] Query commands: `q_state`, `q_view`, `q_time`
-- [ ] Python worker parses JSON and translates errors to exceptions
-- [ ] Protocol edge cases covered by integration tests
+- [x] JSON request/response envelope (cJSON integration) *(cJSON 1.7.19 vendored at `Src/ext/cJSON/`; `server_core.{c,h}` wraps request parsing + response emission; `process_server_mode_stdio` accepts both raw lines and `{"type":"request",...}` and emits one response line per command, with populated `stdout`/`stderr` fields via the fd-level output capture below.)*
+- [x] Handshake sequence (`ready` → `hello` → `hello_ack`) *(startup emits `{"type":"event","event":"ready","version":"1.0",...}`; `server_try_hello` consumes inline `{"type":"hello",...}` frames and emits `hello_ack` with `compatible` flag. Hello is optional — non-hello lines fall through to request processing.)*
+- [x] `griz_out()` / `griz_err()` sink indirection implemented *(done via fd-level redirect: `server_capture_begin` / `server_capture_end` in `server_core.c` dup2 stdout/stderr to tmpfile()s around each parse_command, then drain them into the response's `stdout`/`stderr` fields. Capture is capped at 256 KB per stream with an `…[truncated]` sentinel. The fd-level approach subsumes a source-level `griz_out`/`griz_err` wrapper — every `printf`/`fprintf(stdout,…)`/`write(1,…)` routes through the redirect automatically.)*
+- [x] Audit & replace `printf` / `fprintf(stdout,…)` on batch paths *(subsumed by the fd-level capture above — no source-level audit required. Verified by `test_stdout_is_captured_into_response`: the `help` command's multi-line output lands in `response.stdout` instead of interleaving with the JSON stream.)*
+- [x] Structured error taxonomy with `code` field *(popup_dialog now calls `server_record_error` in GRIZ_SERVER_BUILD; the command loop translates captured diagnostics into `{"status":"error","error":{"code":...,"message":...}}`. Codes: `invalid_syntax` (USAGE_POPUP), `command_error` (WARNING_POPUP / generic), `unknown_command` (INFO_POPUP matching "not valid"). INFO_POPUP notices without error keywords do not raise.)*
+- [x] Query commands: `q_state`, `q_view`, `q_time` *(dispatched before parse_command in viewer.c's server loop; return `data` field with time_state / max_time_state / state_count / time_value / max_time_value / viewport / current_field. Camera/materials/colormap still TODO.)*
+- [x] Python worker parses JSON and translates errors to exceptions *(Worker uses a reader thread to route responses/events; `cmd(command)` sends a JSON request with an auto-generated id, blocks for the matching response, raises `GrizCommandError(code, message)` on status:error. `send_command(raw)` retained for fire-and-forget / crashy paths.)*
+- [x] Protocol edge cases covered by integration tests *(14 tests in `pygriz/tests/test_worker.py`: handshake populates server_info, cmd round-trip, raw+JSON envelope paths, malformed JSON → invalid_request, unknown command → unknown_command, q_state/q_view/q_time shapes, stdout-capture round-trip.)*
 
 ### Phase 3 — Python API package ([03](mcp/03-python-api.md), [06](mcp/06-results-mapping.md), [08 §2.3](mcp/08-phasing.md))
 

@@ -2900,6 +2900,7 @@ process_serial_batch_mode( char *batch_input_file_name, Analysis *analy )
 
 #ifdef GRIZ_SERVER_BUILD
 
+#include "cJSON.h"
 #include "server_core.h"
 
 /************************************************************
@@ -2917,13 +2918,18 @@ process_serial_batch_mode( char *batch_input_file_name, Analysis *analy )
  *     a raw command line.
  *   - JSON response envelope: every executed command produces
  *     a single-line response via server_emit_response().
- *   - Handshake (ready/hello/hello_ack): not yet wired — the
- *     "READY" sentinel still stands in as the startup marker.
- *   - Output capture: not yet wired — the response's `stdout`
- *     and `stderr` fields are always empty strings. Any chatter
- *     from parse_command() continues to land on the real stdout
- *     and will intersperse with response lines until the
- *     griz_out/griz_err sink-indirection item is done.
+ *   - Handshake (ready/hello/hello_ack): supported. Startup emits
+ *     {"type":"event","event":"ready","version":"1.0",...} and the
+ *     loop consumes any inline {"type":"hello",...} frames by
+ *     emitting a hello_ack before processing the next request.
+ *     The hello is optional — clients may skip straight to
+ *     requests for debugging.
+ *   - Output capture: implemented at the fd level. server_capture_begin
+ *     dup2()s stdout and stderr to tmpfile()s for the duration of
+ *     parse_command, server_capture_end() reads them back into the
+ *     response's `stdout` / `stderr` fields, and the original fds are
+ *     restored before emitting the response line. No interleaving
+ *     between parse_command chatter and JSON responses is possible.
  */
 #define GRIZ_SERVER_MAX_LINE 4096
 
@@ -2933,6 +2939,113 @@ server_is_terminator( const char *s )
     return ( strcmp( s, "quit" ) == 0
           || strcmp( s, "exit" ) == 0
           || strcmp( s, "end"  ) == 0 );
+}
+
+/* Trim leading whitespace and return a pointer to the first non-space
+ * character. Used to normalize query command strings. */
+static const char *
+server_skip_ws( const char *s )
+{
+    while ( *s == ' ' || *s == '\t' )
+        s++;
+    return s;
+}
+
+static cJSON *
+build_q_time_data( Analysis *analy )
+{
+    cJSON *data = cJSON_CreateObject();
+    int    max_state = analy->state_count > 0 ? analy->state_count - 1 : 0;
+    double time_value     = 0.0;
+    double max_time_value = 0.0;
+
+    if ( analy->state_times != NULL && analy->state_count > 0 )
+    {
+        int cur = analy->cur_state;
+        if ( cur < 0 )                      cur = 0;
+        if ( cur >= analy->state_count )    cur = analy->state_count - 1;
+        time_value     = analy->state_times[cur];
+        max_time_value = analy->state_times[analy->state_count - 1];
+    }
+
+    cJSON_AddNumberToObject( data, "time_state",     analy->cur_state );
+    cJSON_AddNumberToObject( data, "max_time_state", max_state );
+    cJSON_AddNumberToObject( data, "state_count",    analy->state_count );
+    cJSON_AddNumberToObject( data, "time_value",     time_value );
+    cJSON_AddNumberToObject( data, "max_time_value", max_time_value );
+    return data;
+}
+
+static cJSON *
+build_q_view_data( Analysis *analy )
+{
+    cJSON *data     = cJSON_CreateObject();
+    cJSON *viewport = cJSON_CreateObject();
+    (void) analy;
+
+    cJSON_AddNumberToObject( viewport, "width",  get_window_width()  );
+    cJSON_AddNumberToObject( viewport, "height", get_window_height() );
+    cJSON_AddItemToObject(   data,     "viewport", viewport );
+    return data;
+}
+
+static cJSON *
+build_q_state_data( Analysis *analy )
+{
+    cJSON *data = build_q_time_data( analy );
+    cJSON *viewport;
+    const char *result_name;
+
+    viewport = cJSON_CreateObject();
+    cJSON_AddNumberToObject( viewport, "width",  get_window_width()  );
+    cJSON_AddNumberToObject( viewport, "height", get_window_height() );
+    cJSON_AddItemToObject(   data,     "viewport", viewport );
+
+    result_name = ( analy->cur_result != NULL
+                    && analy->cur_result->name[0] != '\0' )
+                  ? analy->cur_result->name
+                  : NULL;
+    if ( result_name != NULL )
+        cJSON_AddStringToObject( data, "current_field", result_name );
+    else
+        cJSON_AddNullToObject(   data, "current_field" );
+
+    if ( analy->result_title[0] != '\0' )
+        cJSON_AddStringToObject( data, "result_title", analy->result_title );
+
+    return data;
+}
+
+/* If `cmd` is a recognised query command, emit a response with a
+ * populated `data` field and return 1. Otherwise return 0 and leave
+ * the caller to dispatch through parse_command(). */
+static int
+server_try_query( const char *id, const char *cmd, Analysis *analy )
+{
+    const char *c;
+    cJSON      *data = NULL;
+
+    c = server_skip_ws( cmd );
+
+    if ( strcmp( c, "q_state" ) == 0 )
+    {
+        data = build_q_state_data( analy );
+    }
+    else if ( strcmp( c, "q_view" ) == 0 )
+    {
+        data = build_q_view_data( analy );
+    }
+    else if ( strcmp( c, "q_time" ) == 0 )
+    {
+        data = build_q_time_data( analy );
+    }
+    else
+    {
+        return 0;
+    }
+
+    server_emit_data_response( id, data );
+    return 1;
 }
 
 int
@@ -3007,8 +3120,20 @@ process_server_mode_stdio( const char *db_path, int width, int height )
 
     env.griz_pid = getppid();
 
-    fputs( "READY\n", stdout );
-    fflush( stdout );
+    /* parse_command() will fclose(analy->p_histfile) on the invalid-
+     * command path without a NULL check. Give it a real file to
+     * close and truncate so command failures don't crash the server. */
+    {
+        char hist_path[MAXPATHLENGTH];
+        snprintf( hist_path, sizeof( hist_path ),
+                  "/tmp/griz-server-%d.grizhist", (int) getpid() );
+        analy->p_histfile = fopen( hist_path, "at" );
+        strncpy( analy->hist_fname, hist_path,
+                 sizeof( analy->hist_fname ) - 1 );
+        analy->hist_fname[sizeof( analy->hist_fname ) - 1] = '\0';
+    }
+
+    server_emit_ready();
 
     while ( fgets( line, sizeof( line ), stdin ) != NULL )
     {
@@ -3021,6 +3146,12 @@ process_server_mode_stdio( const char *db_path, int width, int height )
             line[--len] = '\0';
 
         if ( line[0] == '\0' || line[0] == '#' )
+            continue;
+
+        /* Optional handshake: consume hello frames and loop back. The
+         * client may send zero, one, or more hellos; non-hello JSON
+         * and raw command lines fall through to request processing. */
+        if ( server_try_hello( line ) )
             continue;
 
         if ( server_parse_request( line, &req ) != 0 )
@@ -3036,6 +3167,15 @@ process_server_mode_stdio( const char *db_path, int width, int height )
             break;
         }
 
+        /* Dispatch query commands (q_state, q_view, q_time) directly —
+         * they bypass parse_command and emit a response with a
+         * populated `data` field. */
+        if ( server_try_query( req.id, req.cmd, analy ) )
+        {
+            server_request_free( &req );
+            continue;
+        }
+
         /* parse_command() takes a mutable buffer (it tokenises in place);
          * copy the resolved command so the cJSON-owned string is not
          * disturbed. Truncate on overflow — GRIZ_SERVER_MAX_LINE matches
@@ -3044,13 +3184,30 @@ process_server_mode_stdio( const char *db_path, int width, int height )
         strncpy( cmd_buf, req.cmd, sizeof( cmd_buf ) - 1 );
         cmd_buf[sizeof( cmd_buf ) - 1] = '\0';
 
+        server_clear_error();
+        server_capture_begin();
         parse_command( cmd_buf, analy );
-        fflush( stdout );
-        fflush( stderr );
+        {
+            char       *out_s = NULL;
+            char       *err_s = NULL;
+            const char *err_code    = NULL;
+            const char *err_message = NULL;
 
-        /* Output capture is a separate Phase 2 item; until it lands the
-         * response carries empty stdout/stderr strings. */
-        server_emit_response( req.id, 1, "", "" );
+            server_capture_end( &out_s, &err_s );
+
+            if ( server_peek_error( &err_code, &err_message ) )
+            {
+                server_emit_error( req.id, err_code, err_message );
+            }
+            else
+            {
+                server_emit_response( req.id, 1,
+                                      out_s ? out_s : "",
+                                      err_s ? err_s : "" );
+            }
+            free( out_s );
+            free( err_s );
+        }
         server_request_free( &req );
     }
 
