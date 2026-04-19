@@ -65,7 +65,7 @@ Notes:
 Three triggers:
 
 1. **State-mutating command** (command thread). After `parse_command()` succeeds and `notify_state()` fires, post a render request. Serialize one render per command; additional requests during the render are coalesced (latest wins).
-2. **Client-driven interactive input** (I/O thread). During drag, every translated command (e.g. `rx 2`) causes a render. At 50 ms drag rate the render thread is the gating resource on big meshes; LOD policy (§5) handles this.
+2. **Client-driven interactive input** (I/O thread). During drag, every translated command (e.g. `rx 2`) causes a render. At 50 ms drag rate the render thread is the gating resource on big meshes. *Post-MVP* (§9): LOD policy (§5) reduces interactive cost on big meshes. MVP renders every drag command at full quality and relies on the §5.3 frame-cadence cap to bound load.
 3. **Client-requested re-render** (explicit RPC). Viewport resize, LOD toggle, or "refresh at full quality" button. Same path as (1).
 
 Nothing the **client** does outside those paths causes a frame.
@@ -87,9 +87,9 @@ Target bitrate: 1080p at 85% quality ≈ 200–400 KB per frame. At 10 FPS that'
 
 **Quality control.** A single integer 1–100 exposed to the client; default 85. Lossless PNG available for screenshots only (§7). No chroma subsampling tweaks in v1.
 
-### 4.2 v2 codec: H.264 (or AV1)
+### 4.2 Post-MVP codec: H.264 (or AV1)
 
-Phase-2 extension. Motivation: WAN latency measurements at the end of phase 0 will tell us whether JPEG per frame is good enough. H.264 with delta frames cuts bandwidth ~10× for typical camera drags.
+Post-MVP extension (§9). Motivation: WAN latency measurements at the end of phase 0 will tell us whether JPEG per frame is good enough. H.264 with delta frames cuts bandwidth ~10× for typical camera drags. Gate the work on those measurements; if JPEG per frame meets the latency target, this never lands.
 
 Introducing H.264 requires:
 
@@ -97,7 +97,7 @@ Introducing H.264 requires:
 - **Protocol addition.** New codec id (`0x03`) in [02-protocol](02-protocol.md) §3. Inside the frame envelope, flags bit 1 (`keyframe`) already covers the H.264 IDR case.
 - **Client decoder.** FFmpeg / libavcodec on the client. Adds a non-trivial dependency to the Qt build — worth bundling.
 
-Don't block v1 on v2.
+MVP commits to JPEG only.
 
 ### 4.3 What's not the codec
 
@@ -107,13 +107,13 @@ Don't block v1 on v2.
 
 ## 5. Level of detail
 
-The large-mesh priority from `../UI.md` §5 says: interactive responsiveness on big meshes trumps full-quality everywhere. Two knobs during drag:
+The large-mesh priority from `../UI.md` §5 says: interactive responsiveness on big meshes trumps full-quality everywhere. **MVP scope:** §5.3 (frame cadence cap) only — the rest is *post-MVP* (§9). Rationale: the bar71-class meshes used for proof-of-life render fast enough at full quality on any modern node; LOD complexity is not earning its keep until measurement on a representative large mesh shows interactive lag.
 
-### 5.1 Interaction detection
+### 5.1 Interaction detection *(post-MVP)*
 
 Client owns this. During a drag/zoom, it sends a `render_mode` hint with each command (e.g. `rx 5 /interactive`) or signals an out-of-band LOD event. Server enters **interacting** state, exits on 200 ms input quiescence back to **idle**, posting one final full-quality frame.
 
-### 5.2 What LOD changes
+### 5.2 What LOD changes *(post-MVP)*
 
 During **interacting**:
 
@@ -125,9 +125,9 @@ On **idle**:
 
 - One re-render at full viewport and quality, streamed as a single high-quality frame (flag bit 2 = `last`).
 
-No mesh subsampling in v1 (the Griz fixed-function pipeline doesn't have a cheap mesh-decimation path). Defer.
+No mesh subsampling — the Griz fixed-function pipeline doesn't have a cheap mesh-decimation path. Permanently out of scope for this LOD design; if it ever matters, it's a `draw.c`-level project, not a renderer-pipeline change.
 
-### 5.3 Frame cadence
+### 5.3 Frame cadence *(MVP)*
 
 - Cap the render-thread trigger rate to 30 Hz (configurable). Above that, coalesce drag commands server-side on arrival before enqueuing a render.
 - Idle → no frames. No speculative rendering.
@@ -148,8 +148,8 @@ Server-side statistics (frames rendered, frames encoded, frames dropped to queue
 
 Two modes:
 
-- **Save to server disk.** The existing `outrgb <path>` command keeps working and is the mechanism the MCP bridge relies on (via `pygriz/src/griz/session.py:139–180`). Server writes SGI; client or MCP converts. No protocol change.
-- **Return inline to client.** New: add an `outpng_inline` (or extend `outrgb` with a `/inline` modifier) that emits a `kind=0x02` binary frame, subtype `0x02`, codec `0x02` (PNG). Use the same encoder plumbing as §4, with quality cranked to lossless PNG. For stdio transport, base64-encode into the response's `data.image` field. Handled in [02-protocol](02-protocol.md) Open questions.
+- **Save to server disk.** The existing `outrgb <path>` command keeps working and is the mechanism the MCP bridge relies on (via `pygriz/src/griz/session.py:139–180`). Server writes SGI; client or MCP converts. No protocol change. **MCP path is MVP-complete today.**
+- **Return inline to client (RPC).** New: add an `outpng_inline` (or extend `outrgb` with a `/inline` modifier) that emits a `kind=0x02` binary frame, subtype `0x02`, codec `0x02` (PNG). Use the same encoder plumbing as §4, with quality cranked to lossless PNG. **Required for the Qt client MVP** because [02-protocol](02-protocol.md) §6.1 commits the RPC transport to inline binary screenshots (no base64-in-JSON fallback). MCP stdio keeps the disk-path return per the same section — no base64-in-JSON path is being added there.
 
 **Format consistency.** PNG is the default for screenshot output (lossless, universally decodable, already usable by the MCP `Image` type). SGI-to-PNG runs client-side today (`pygriz/src/griz/_sgi.py`); when a server-side PNG encoder lands, retire the SGI conversion.
 
@@ -157,10 +157,8 @@ Two modes:
 
 `anim FROM TO` already exists in the interpret.c command set (sweeps the state range). For export:
 
-- **Server-side MP4.** Record each rendered frame into an x264 encoder; on `anim` completion, emit a `kind=0x02` subtype `0x04` binary frame containing the final MP4. Cheap if H.264 is already in the build (§4.2).
-- **Server-side frame dump.** Existing paths (`anim` + `outrgb` per step) still work. No new work.
-
-v1 can ship with the frame-dump path and add MP4 in phase 2.
+- **MVP — server-side frame dump.** Existing paths (`anim` + `outrgb` per step) still work. Zero new server work; users assemble the dumped frames into a movie offline (e.g. `ffmpeg`) if they want one.
+- **Post-MVP — server-side MP4** (§9). Record each rendered frame into an x264 encoder; on `anim` completion, emit a `kind=0x02` subtype `0x04` binary frame containing the final MP4. Cheap if H.264 is already in the build (§4.2) — both depend on landing the H.264 encoder, so they ship together if at all.
 
 ## 8. Minimum changes to `draw.c`
 
@@ -172,9 +170,25 @@ Target: **zero** intrusive changes to `Src/draw.c` (18k lines). The existing `an
 
 If a specific draw command mutates state but does not set `analy->update_display_needed` (or whatever the existing dirty flag is called), that's a bug in `draw.c` to be fixed in place, not a reason to add a new dispatch path in the server.
 
+## 9. Post-MVP / out of scope
+
+MVP target is proof-of-life: the server renders a frame on every state-mutating command, JPEG-encodes it, and pushes it as a `kind=0x02` binary frame to the Qt client; the client displays it. Items below are deliberately deferred so MVP scope stays focused; nothing here is blocking and each links back to its originating section.
+
+**Polish (deferred, will land in a later phase):**
+
+- LOD policy (§5.1, §5.2): client-driven `interacting` / `idle` state, reduced viewport during drag, JPEG quality drop, idle full-quality re-render. MVP renders every frame at full quality and relies on the §5.3 30 Hz cadence cap. Gate landing on measurement showing interactive lag on a representative large mesh.
+- H.264 / AV1 codec (§4.2): bandwidth-saving codec with delta frames. Gate on phase-0 WAN latency measurements; if JPEG meets the target, this never lands.
+- Server-side MP4 export from `anim` (§7.2): bundled with the H.264 encoder above.
+- `q_stats` query exposing render/encode/drop counters (§6).
+- EGL-surfaceless backend behind the same `OffscreenContext` abstraction, for nodes with working GPU drivers (§2.2).
+- **Raw-RGBA-over-zstd alternative** to JPEG for tiny interactive viewports. Measurement-gated; the per-frame JPEG encode cost on a small viewport may not actually beat zstd on raw bytes. Defer until LOD §5.2 lands and we have an interaction profile to measure against — without LOD there is no "tiny viewport" path to optimize.
+- **Client-side frame caching for resize.** Stretch the last frame as a placeholder while the new-size frame is rendering, to hide the resize round-trip latency. UX polish; the [04-client](04-client.md) §6 fallback ("neutral background with a small overlay label") is the MVP behavior. Tracked in 04-client §13 if it lands.
+
+**Permanently out of scope:**
+
+- **Mesh subsampling for LOD.** The Griz fixed-function pipeline has no cheap mesh-decimation path; adding one is a `draw.c`-level project, not a renderer-pipeline change. If big-mesh interactivity ever demands it, that's its own initiative.
+- **Parallel low-res thumbnail stream.** Motivated by reconnect / multi-viewport scenarios — neither is in the v1 plan (reconnect-to-live-server is gated on Invariant I12; multi-viewport is a phase-3 idea). Revisit only if those land.
+
 ## Open questions
 
-- **Frame format per interactive drag: JPEG or a lighter raw?** Server-side raw RGBA pushed through zstd might beat a JPEG encode at tiny viewports. Measure before committing.
-- **Client-side frame caching for redraw on resize.** If the user just resizes the window by 10 px, re-requesting a full frame is wasteful. A cheap fallback is to stretch the last frame until the new-size frame arrives — purely a client UX call; mention in [04-client](04-client.md).
-- **Stream a thumbnail in parallel?** A separate low-res 128² thumbnail stream might help reconnect / multi-viewport scenarios. Defer.
-- **Deterministic frames for golden-image tests.** OSMesa rendering is deterministic across identical versions, but cross-node differences (library versions) can drift. The test framework in [10-testing](10-testing.md) needs a tolerance mode.
+*(All rendering/streaming open questions resolved as of 2026-04-19; resolutions are: JPEG is the v1 codec with raw-RGBA-over-zstd deferred to post-LOD measurement (§4.1, §9); client-side frame caching on resize is a 04-client UX call deferred to post-MVP polish (§9, [04-client](04-client.md) §13); parallel thumbnail stream permanently out of scope (§9); and golden-image determinism is tracked in [10-testing](10-testing.md), not here — OSMesa is deterministic across identical library versions, and cross-node drift is handled by the test framework's tolerance mode.)*

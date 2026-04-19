@@ -107,8 +107,8 @@ Every menu action routes through the same code path as a command console entry: 
 ```
 
 - Central widget: `Viewport`.
-- Dock widgets (Qt `QDockWidget`, user-movable): `Materials`, `Selection`, `Results`, `TimeSlider`. Allow layout save/restore via `QMainWindow::saveState()`.
-- Console is a persistent bottom dock (not an overlay), sized ~20% of window height by default. Command history persists across sessions.
+- Dock widgets (Qt `QDockWidget`, user-movable): `Materials`, `Selection`, `Results`, `TimeSlider`. MVP ships a single hardcoded default layout — `QDockWidget` gives users drag-to-rearrange for free. *Post-MVP* (§13): layout save/restore via `QMainWindow::saveState()` and a "Reset to default layout" menu item.
+- Console is a persistent bottom dock (not an overlay), sized ~20% of window height by default. *Post-MVP* (§13): command history persistence across sessions.
 
 ## 4. Client state model
 
@@ -165,14 +165,20 @@ Each dock observes one or two signals and repopulates its model:
 
 Must behave like the current Motif console (so scripts and muscle memory survive) and cooperate with menus (so every menu click is reviewable in the history).
 
-Features:
+MVP features:
 
 - **Prompt + output pane.** Separate panes so command-echo doesn't scroll output off. Output pane renders `response.stdout` + `response.stderr` appended per command. Commands, their ids, and responses scroll with monotonic timestamps.
-- **History.** Up/Down cycle through prior commands; `Ctrl-R` reverse-search. History persists in `$XDG_CACHE_HOME/griz/history.log` (one per host profile).
-- **Autocomplete.** Client-side static list for v1 (harvest tokens from `Src/interpret.c`'s command-table walker; ~200 commands). Server-provided via a new `q_commands` query is a v2 nice-to-have. Tab completion on command name; argument completion deferred.
-- **Scripts.** `rdhis FILENAME` already exists in the Griz command set and works over the wire verbatim. The client also exposes `File → Run Script…` that `cmd()`s `rdhis <path>`.
+- **In-session history.** Up/Down cycle through commands issued in the current session (no on-disk persistence — see post-MVP below).
 - **Menu interop.** Every menu action calls `Console::execute(QString)` which renders the command in the console and then dispatches to worker. Keeps the history honest.
 - **Error presentation.** `status="error"` responses render in red with the `error.code` badge; `error.message` goes to the output pane, `response.stderr` (usage lines) follows. No modal popups for command errors.
+- **Scripts.** `rdhis FILENAME` already exists in the Griz command set and works over the wire verbatim — typing it in the console is the MVP entry point.
+- **Multi-command "atomic" workflows.** Use `;`-separated compound commands already supported by `parse_command()` (e.g. set three toggles then redraw in one envelope). No client-side batched-commit layer is being built; the wire commitment is one Griz command per menu click or compound-command per `Console::execute`. (Resolution of the persistent-vs-transient command-bridge open question.)
+
+*Post-MVP* (§13):
+
+- `Ctrl-R` reverse history search and persistent history at `$XDG_CACHE_HOME/griz/history.log` (one per host profile).
+- Tab autocomplete (client-side static list harvested from `Src/interpret.c`'s command table; ~200 commands). Server-provided via a new `q_commands` query is a later iteration on top.
+- `File → Run Script…` menu wrapper around `rdhis <path>`.
 
 ## 6. Viewport widget
 
@@ -200,15 +206,20 @@ Rate-limiting during drags: the client issues one command at a time and coalesce
 
 - `SelectionDock` displays the server-side selection: table of `{kind, id, metadata}` rows. Rows come from the `selection` part of `SessionState`.
 - Highlight re-render happens server-side (the client just receives a new frame with the highlight applied); the client does no geometry math.
-- Right-click row actions: "Hide material N", "Clear selection", "Export CSV". Each routes through the command bridge.
+- *Post-MVP* (§13): right-click row actions ("Clear selection", "Hide material N", "Export CSV"), each routed through the command bridge. MVP renders the table only; users invoke these via the console.
 
 ## 8. Persisted settings
 
-- `$XDG_CONFIG_HOME/griz/hosts.toml`: [01-architecture](01-architecture.md) §3 defines schema.
-- `$XDG_CONFIG_HOME/griz/sessions.toml`: reconnect hints.
-- `$XDG_CONFIG_HOME/griz/ui.toml`: window geometry, dock layout, recent DBs, colormap preference.
-- `$XDG_CACHE_HOME/griz/history.log`: command console history per host.
-- `$XDG_CACHE_HOME/griz/known_hosts`: known-hosts shim used by the SSH driver.
+MVP — minimum needed to launch a session:
+
+- `$XDG_CONFIG_HOME/griz/hosts.toml`: host profiles per [01-architecture](01-architecture.md) §3.
+
+*Post-MVP* (§13):
+
+- `$XDG_CONFIG_HOME/griz/sessions.toml`: reconnect hints. Gated on reconnect-to-live-server ([01-architecture](01-architecture.md) Invariant I12); the MVP server exits on first disconnect, so there is nothing to reconnect to.
+- `$XDG_CONFIG_HOME/griz/ui.toml`: window geometry, dock layout, recent DBs, colormap preference. Tied to layout save/restore (§3).
+- `$XDG_CACHE_HOME/griz/history.log`: command console history per host. Tied to console history persistence (§5).
+- `$XDG_CACHE_HOME/griz/known_hosts`: not needed — system `ssh` reads `~/.ssh/known_hosts` directly per [07-launch-ssh-slurm](07-launch-ssh-slurm.md) §5.1.
 
 File format: TOML for all config (human-friendly, hand-edit-safe). YAML reserved for data (results map).
 
@@ -230,7 +241,7 @@ Queues between threads: `QMetaObject::invokeMethod(..., Qt::QueuedConnection)` f
 | `protocol_mismatch` during handshake | Modal | "Server is X, client needs ≥Y"; block until dismissed |
 | SSH tunnel death / network thread read error | Modal + reconnect banner | Offer "Reconnect" and "Cancel session" |
 | `session_ending(reason="slurm_walltime")` | Modal with countdown | Offer "Relaunch job" + "Save session and quit" |
-| Server crash (EOF without `session_ending`) | Modal + tail of server log (via `ssh cat`) | Offer "Relaunch" |
+| Server crash (EOF without `session_ending`) | Modal | Offer "Relaunch". *Post-MVP:* include tail of remote log via `ssh cat` (gated on Invariant I10; see [07-launch-ssh-slurm](07-launch-ssh-slurm.md) §6) |
 | `state_overflow` sentinel | Silent (client refetches) | Log only |
 
 ## 11. Python → Qt translation table
@@ -258,10 +269,25 @@ Full detail in [09-build-packaging-ci](09-build-packaging-ci.md). Short version:
 - Third-party via Conan (preferred; easier cross-platform Qt fetch) or vcpkg (easier Windows). Pick one in [09-build-packaging-ci](09-build-packaging-ci.md).
 - Platforms: Linux x86_64 and macOS (arm64 + x86_64) for v1; Windows in phase 3 per `../UI.md` §7.
 
+## 13. Post-MVP / out of scope
+
+MVP target is proof-of-life: launch the client, connect to a server, render frames, issue commands, and see state changes (time, materials, results, selection) reflected in the docks. Items below are deliberately deferred so MVP scope stays focused; nothing here is blocking and each links back to its originating section.
+
+**Polish (deferred, will land in a later phase):**
+
+- Layout save/restore via `QMainWindow::saveState()` and a "Reset to default layout" menu item (§3).
+- Bundled dark theme. MVP inherits the OS theme via Qt's platform integration; a dedicated dark theme is added only if user demand emerges. (Resolution of the theme open question.)
+- Console: `Ctrl-R` reverse search; persistent per-host history at `$XDG_CACHE_HOME/griz/history.log`; tab autocomplete (static client-side list, then server-side `q_commands`); `File → Run Script…` menu wrapper around `rdhis <path>` (§5).
+- Selection-dock right-click actions ("Clear selection", "Hide material N", "Export CSV") (§7).
+- `sessions.toml` reconnect hints (§8; gated on Invariant I12).
+- `ui.toml` window geometry / recent DBs / colormap preference (§8; tied to layout save/restore).
+- Tail of remote server log in the crash modal (§10; gated on Invariant I10).
+- Accessibility tuning beyond Qt's defaults: explicit WCAG AA contrast pass, full keyboard-nav audit across docks, screen-reader review. Qt's platform integration already gives OS-respecting fonts and high-DPI scaling for free in MVP. (Resolution of the accessibility-baseline open question.)
+
+**Permanently out of scope:**
+
+- **Offline mode** (open a DB without a server). Would require linking Mili into the client and violates invariant **I4**. Workstation users who want a local-only flow should run `griz-server --transport=rpc` on their workstation (variant A in [01-architecture](01-architecture.md) §5). No client-side fallback path will be built. (Resolution of the offline-mode open question.)
+
 ## Open questions
 
-- **Dockable vs. fixed layout.** Lean dockable (`QDockWidget`) — power users want control. Default layout bundled; reset-to-default menu item.
-- **Theme:** follow OS theme via Qt's platform integration, with an optional bundled dark theme for dark-workflow folks. No light/dark forced on the user.
-- **Persistent command bridge vs. transient.** The current design sends each menu click as its own Griz command (no batched "commit"). Any interactive workflow that needs atomic multi-command updates (e.g. "set three toggles then redraw") can use `;`-separated compound commands already supported by `parse_command()`.
-- **Offline mode:** should the client open a DB *without* a server? Would require linking Mili; violates invariant **I4**. Recommend no — if users want offline, they can run `griz-server --transport=rpc` on the workstation (variant A in [01-architecture](01-architecture.md) §5).
-- **Accessibility baseline.** Target WCAG AA contrast; keyboard navigation across all docks; font scale via Qt's high-DPI knobs. Deferred tuning to phase 2.
+*(All client-level open questions resolved as of 2026-04-19; resolutions are: dockable via `QDockWidget` with a hardcoded default layout for MVP and save/restore deferred (§3, §13); OS theme inherited via Qt platform integration with bundled dark theme deferred (§13); one-command-per-action with `;`-separated compound commands for atomic multi-command workflows (§5); offline mode permanently out of scope (§13); accessibility tuning beyond Qt defaults deferred (§13).)*
