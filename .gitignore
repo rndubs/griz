@@ -3,3 +3,5 @@ Src/GRIZ*/
 Src/*.log
 Src/test/scripts
 Src/autom4te.cache/
+
+.claude/

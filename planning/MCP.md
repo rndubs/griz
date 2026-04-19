@@ -1,5 +1,88 @@
 # Griz MCP Server — Design & Implementation Plan
 
+## 0. Implementation Status
+
+Top-level progress tracker. Detailed design for each topic lives in
+[`mcp/`](mcp/); phase breakdown and milestone criteria live in
+[`mcp/08-phasing.md`](mcp/08-phasing.md).
+
+### Planning documents (design complete when checked)
+
+- [x] [mcp/01-architecture.md](mcp/01-architecture.md) — system overview & component layering
+- [x] [mcp/02-server-binary.md](mcp/02-server-binary.md) — `griz-server` C implementation
+- [x] [mcp/03-python-api.md](mcp/03-python-api.md) — `griz` Python package design
+- [x] [mcp/04-mcp-adapter.md](mcp/04-mcp-adapter.md) — `griz-mcp` tool surface
+- [x] [mcp/05-protocol.md](mcp/05-protocol.md) — JSON envelope, handshake, error taxonomy
+- [x] [mcp/06-results-mapping.md](mcp/06-results-mapping.md) — YAML-backed field name map
+- [x] [mcp/07-testing.md](mcp/07-testing.md) — unit/integration/perf test strategy
+- [x] [mcp/08-phasing.md](mcp/08-phasing.md) — phase breakdown & milestone criteria
+
+### Phase 1 — Foundation & smoke test ([02](mcp/02-server-binary.md), [03](mcp/03-python-api.md), [08 §2.1](mcp/08-phasing.md))
+
+- [ ] `griz-server` target builds from `batchopt` objects
+- [ ] Server accepts plain-text commands via stdin (`process_server_mode_stdio()`)
+- [ ] OSMesa rendering works headlessly in server mode
+- [ ] `outpng` produces valid PNG files from server mode
+- [ ] Minimal Python `Worker` spawns server and sends commands
+- [ ] Clean shutdown with no resource leaks
+- [ ] End-to-end smoke test passes
+
+### Phase 2 — JSON protocol & output capture ([02](mcp/02-server-binary.md), [05](mcp/05-protocol.md), [08 §2.2](mcp/08-phasing.md))
+
+- [ ] JSON request/response envelope (cJSON integration)
+- [ ] Handshake sequence (`ready` → `hello` → `hello_ack`)
+- [ ] `griz_out()` / `griz_err()` sink indirection implemented
+- [ ] Audit & replace `printf` / `fprintf(stdout,…)` on batch paths
+- [ ] Structured error taxonomy with `code` field
+- [ ] Query commands: `q_state`, `q_view`, `q_time`
+- [ ] Python worker parses JSON and translates errors to exceptions
+- [ ] Protocol edge cases covered by integration tests
+
+### Phase 3 — Python API package ([03](mcp/03-python-api.md), [06](mcp/06-results-mapping.md), [08 §2.3](mcp/08-phasing.md))
+
+- [ ] `Griz` class with context manager (`__enter__` / `__exit__`)
+- [ ] `field` namespace (`show`, `list`, `info`)
+- [ ] `view` namespace (`rotate`, `translate`, `scale`, `zoom`, `reset`)
+- [ ] `time` namespace (`set_state`, `set_time`, `animate`)
+- [ ] `materials` namespace (`hide`, `show`, `list`)
+- [ ] Top-level: `select`, `highlight`, `clear_picks`, `screenshot`, `state`, `raw`
+- [ ] `Src/data/results_map.yaml` and YAML loader
+- [ ] Unit tests with mocked worker (>90% coverage)
+- [ ] `pyproject.toml` and pip-installable from `Src/python/griz/`
+
+### Phase 4 — MCP adapter ([04](mcp/04-mcp-adapter.md), [08 §2.4](mcp/08-phasing.md))
+
+- [ ] `griz-mcp` MCP server bootstraps and registers tools
+- [ ] Database tools: `open_database`, `close_database`
+- [ ] Field tools: `show_field`, `list_fields`
+- [ ] View tools: `rotate_view`, `reset_view`
+- [ ] Time tools: `set_time_state`, `animate`
+- [ ] Material tools: `hide_materials`, `show_materials`
+- [ ] `screenshot` returns MCP `ImageContent`
+- [ ] `get_state`, `restart_session`, `raw_command`
+- [ ] End-to-end MCP client transcript in README
+- [ ] Package publishable from `Src/python/griz_mcp/`
+
+### Phase 5 — Polish & production readiness ([08 §2.5](mcp/08-phasing.md))
+
+- [ ] Timeout & watchdog mechanisms
+- [ ] Session restart / recovery
+- [ ] Performance benchmarks meet targets (§6.1)
+- [ ] Stress tests run 24h+ without leaks
+- [ ] MCP prompt templates for common workflows
+- [ ] CI pipeline across supported Python versions
+- [ ] User guide and tutorial docs published
+
+### Shared with UI effort ([shared/](shared/))
+
+- [ ] [shared/server-binary.md](shared/server-binary.md) — `griz-server` target & transports
+- [ ] [shared/command-protocol.md](shared/command-protocol.md) — envelope & handshake
+- [ ] [shared/output-capture.md](shared/output-capture.md) — `griz_out` / `griz_err` plumbing
+- [ ] [shared/query-commands.md](shared/query-commands.md) — `q_*` commands & state schema
+- [ ] [shared/results-map.md](shared/results-map.md) — `results_map.yaml` as single source of truth
+
+---
+
 ## 1. Goal
 
 Expose Griz's visualization capabilities from Python, so that:
