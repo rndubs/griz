@@ -124,7 +124,7 @@ In non-server builds these are `#define`d to `(void)0` so `interpret.c` stays co
 
 - **`state_seq`** is a `static uint64_t` in `server_events.c`, incremented on each emitted event.
 - **Coalescing.** The I/O thread, not `notify_state`, emits the actual event. `notify_state` writes into a "pending diff" dict protected by a mutex. The I/O thread drains and emits after each command response, **before** the next command begins (the ordering guarantee in [`../shared/command-protocol.md`](../shared/command-protocol.md) § Pipelining).
-- **Overflow.** If the client is slow and the send queue is full, the I/O thread drops the oldest pending `state_changed` events and sets an `overflow` flag. When the queue drains, emit a single `{"type":"event","event":"state_overflow","state_seq":N}` sentinel. The client responds with a fresh `q_state`.
+- **Overflow.** If the client is slow and the send queue is full, the I/O thread drops the oldest pending `state_changed` events and sets an `overflow` flag. When the queue drains, emit a single `{"type":"event","event":"state_overflow","state_seq":N}` sentinel. The client MUST respond with a fresh `q_state` request; the server replies with a full snapshot, and `state_changed` events resume from the new `state_seq`. No per-key buffering on the server, no delta replay — single sentinel + full snapshot is the only resync path. Rationale: `q_state` is cheap and overflow is rare by definition; per-key buffering would add a second pending-diff dict, lifetime management, and a delta-vs-snapshot decision tree on the client for a path that fires roughly never. Revisit only if measurement shows `q_state` payloads >100 KB or response time >50 ms.
 
 ### 5.3 Event flow and invariants
 
@@ -172,7 +172,7 @@ Today (`Src/viewer.c:3279–3301`): `quit`/`exit`/`end` command breaks the loop,
 
 Additions for RPC:
 1. **SIGTERM handler.** Install in `server_core.c`. On receipt: emit `{"type":"event","event":"session_ending","reason":"signal_term","seconds_remaining":N}`, flush send queue with a short grace (≤2 s), exit. SLURM sends SIGTERM before SIGKILL at walltime, so a handler is the right spot.
-2. **Peer close.** I/O thread's read returns 0/EOF → treat as `quit`, same cleanup.
+2. **Peer close.** I/O thread's read returns 0/EOF → treat as `quit`, same cleanup. The server exits; reconnect-to-live-server is **out of scope for v1** (see [01-architecture](01-architecture.md) Invariant I12). A user whose SSH tunnel drops must relaunch and reload the analysis. Revisit post-MVP once disconnect frequency is observed in practice.
 3. **Rendezvous file.** Delete on clean exit; leave on crash (the client sweeps on successful connect anyway).
 4. **History file.** Already cleaned up (`Src/viewer.c:3281–3290`); reuse.
 
@@ -213,12 +213,10 @@ Concrete ordered TODOs from the current server to a UI-ready server:
 8. Wire SIGTERM → `session_ending` (§7.3).
 9. Install picking (`Src/server_pick.c`), per [06-picking-and-queries](06-picking-and-queries.md).
 10. Install frame-push pipeline, per [05-rendering-and-streaming](05-rendering-and-streaming.md).
+11. Rename `serial_batch_mode` → `griz_server_mode` (or similar). Precondition: steps 1–2 landed so the rename is mechanical under the compile gate. Cosmetic; non-blocking.
 
 Steps 1–5 unblock the MCP side too (richer state, push events) and do not depend on RPC. Steps 6–10 are the RPC-specific critical path.
 
 ## Open questions
 
-- **Rename `serial_batch_mode`?** It's a misnomer for the server but renaming touches a lot of sites. Defer until 1 and 2 of §9 land and the compile gate can carry the rename trivially.
-- **Reconnect on live session?** If the SSH tunnel drops but the server is still alive, can the client reattach? v1 says no; the rendezvous token still lives on disk, so technically yes. Decision gated on whether we want to hold state through disconnect windows. Tracked in [01-architecture](01-architecture.md) Open questions.
-- **Multi-window / multi-viewport.** Phase 3 idea; would require a multiplexed session manager. Out of scope here.
-- **state_overflow semantics.** Is a single sentinel enough, or should the server also buffer the **latest known value per key** so a resume doesn't require a full `q_state`? Opinion: simpler to always do a `q_state` — cheap, infrequent.
+*(All server-level open questions resolved as of 2026-04-19; resolutions are captured in §5.2 (overflow), §7.3 (no reconnect in v1), §9 step 11 (`serial_batch_mode` rename), and the cascading I12 update in [01-architecture](01-architecture.md).)*

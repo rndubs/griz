@@ -139,7 +139,7 @@ After `sbatch`/`srun` returns:
 
 32-byte urandom generated server-side, base64-encoded in the rendezvous. Client presents it on the first frame (see [02-protocol](02-protocol.md) §2.3). Server validates in constant time. On mismatch: server emits `error.code = "protocol_mismatch"` and closes.
 
-The same token is reused across SSH reconnects within a single `griz-server` lifetime (see [01-architecture](01-architecture.md) Invariant I12). No rotation, no rekey events. Security boundary is rendezvous-file confidentiality (0600 in `$HOME`).
+The token is single-use per `griz-server` lifetime in v1: reconnect-to-live-server is out of scope for the MVP (see [01-architecture](01-architecture.md) Invariant I12), so the server exits on the first disconnect and the next session generates a fresh token. *Future intent (when reconnect ships post-MVP):* the same token will be reused on reconnect — no rotation, no rekey events. Security boundary is rendezvous-file confidentiality (0600 in `$HOME`).
 
 ### 4.3 Alternative: stdout handoff
 
@@ -201,7 +201,7 @@ End-of-walltime: server emits `session_ending(reason="slurm_walltime", seconds_r
 
 - **Tunnel start.** `ssh -N -L <local_port>:127.0.0.1:<server_port> <host>` after rendezvous read. Local port: kernel-ephemeral from `bind(... , 0)`.
 - **Tunnel lifecycle.** Owned by the network thread. Tied 1:1 to the session; killed on disconnect.
-- **Tunnel death** → UI shows a reconnect banner (see [01-architecture](01-architecture.md) §7 SSH drop). Default retry policy: 3 attempts over 30 s. If reconnect succeeds and the server is still alive, resume against the saved session.
+- **Tunnel death** → in v1, the server has already exited (see [01-architecture](01-architecture.md) Invariant I12: single connection per server lifetime). Client surfaces a "Connection lost" modal with a "Relaunch" action that re-runs the launch flow from scratch. *Post-MVP:* once reconnect-to-live-server lands, this becomes a transient banner with auto-retry (default 3 attempts over 30 s) and resume against the saved session.
 
 ## 8. Session reporting
 
@@ -209,13 +209,13 @@ The UI should make "what's going on" observable without the user opening a termi
 
 - **Status bar.** Session state (Connecting / Queued / Starting / Running / Disconnected), host nickname, remaining walltime, current FPS (from frame seq deltas), stream bitrate.
 - **Session menu.** "Cancel job" triggers `scancel` over SSH. *(Post-MVP:* "Show server log" opens a window that `ssh tail`s the remote log file. The MVP omits in-client log surfacing per [01-architecture](01-architecture.md) Invariant I10; users fetch logs manually with `ssh <host> cat $HOME/.griz/logs/{session-id}.log`.)
-- **Notifications.** Non-blocking toast for "Job started", "5 min walltime remaining", "Tunnel dropped — reconnecting".
+- **Notifications.** Non-blocking toast for "Job started", "5 min walltime remaining", "Connection lost — relaunch required" (v1; becomes "Tunnel dropped — reconnecting" once reconnect ships post-MVP).
 
 ## 9. Reconnect and extend
 
-- **Reconnect.** If the SSH tunnel dropped but the server is still running (same session id, rendezvous file still present): client retries SSH; on success, re-opens the tunnel, re-auths with the stored token, sends `q_state` to resync, resumes. No new sbatch.
+- **Reconnect.** *Out of scope for v1* (see [01-architecture](01-architecture.md) Invariant I12). When the SSH tunnel drops, the server exits; the client shows a "Connection lost — relaunch?" modal and the user re-runs launch. *Post-MVP design intent:* if the SSH tunnel dropped but the server is still running (same session id, rendezvous file still present), the client retries SSH; on success, re-opens the tunnel, re-auths with the stored token, sends `q_state` to resync, resumes — no new sbatch. The server-side state machine (idle timeout, single-active-connection enforcement, accept-loop) is the gating work; revisit once disconnect frequency in practice justifies the budget.
 - **Extend walltime.** `scontrol update job=<id> TimeLimit=+01:00:00` is the mechanism; many sites restrict this. Expose as a menu item; fail gracefully with the site error message. Not a v1 focus.
-- **Detach / reattach across client restarts.** Out of scope for v1 — closing the client tears down the server. If reattach becomes a requirement, `sessions.toml` already holds the reconnect hints (host, job id, rendezvous path); the architecture supports it.
+- **Detach / reattach across client restarts.** Out of scope for v1 — closing the client tears down the server. If reattach becomes a requirement, `sessions.toml` already holds the reconnect hints (host, job id, rendezvous path); the architecture supports it (and depends on the same post-MVP reconnect work above).
 
 ## 10. Credentials
 
@@ -238,7 +238,7 @@ Mirrors [01-architecture](01-architecture.md) §7 briefly:
 | Token mismatch | Modal | "Disconnect" |
 | `session_ending(slurm_walltime)` | Modal countdown | "Save & quit" / "Extend walltime" / "Relaunch" |
 | Server crash (EOF w/o session_ending) | Modal + server-log tail | "Relaunch" |
-| SSH drop | Banner + auto-reconnect | — |
+| SSH drop | Modal "Connection lost" | "Relaunch" / "Cancel" *(v1; auto-reconnect banner is post-MVP per I12)* |
 
 ## Open questions
 
