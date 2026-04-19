@@ -649,13 +649,6 @@ IMAGE_INCLUDE_PATHS
 IMAGE_LIBRARY_PATHS
 IMAGE_LIBRARY
 IMAGE_HOME
-SET_OSMESA
-NO_MESA_X11_LIBS
-BATCH_DEFINES
-OSMESA_INCLUDE_PATHS
-OSMESA_LIBRARY_PATHS
-OSMESA_LIBRARY
-OSMESA_HOME
 XMKMF
 CC_INCLUDE_PATHS_GRIZ
 CC_DEFINES_GRIZ
@@ -664,6 +657,13 @@ INSTALL_DIR
 INSTALL_HOME
 KW_ENABLE
 KW_HOME
+SET_OSMESA
+NO_MESA_X11_LIBS
+BATCH_DEFINES
+OSMESA_INCLUDE_PATHS
+OSMESA_LIBRARY_PATHS
+OSMESA_LIBRARY
+OSMESA_HOME
 X11_LIBS
 BATCH_ENABLE
 OSMESA_ENABLE
@@ -810,10 +810,10 @@ enable_nojpeg
 enable_nopng
 with_png
 with_gmake
+with_mesa
 enable_kw
 with_kw
 with_x
-with_mesa
 with_image
 with_hershey
 with_hershey_fonts
@@ -1464,12 +1464,12 @@ Optional Packages:
   --with-png=PATH         Use given base PATH for PNG libraries and header
                           files, "local" the png libs included with Griz
   --with-gmake=PATH       Use given base PATH for gmake tool
-  --with-kw=PATH          Use given base PATH for KW trace file
-  --with-x                use the X Window System
 
 			  --with-mesa=PATH        Use given base PATH for MESA libraries and header
                           files
 
+  --with-kw=PATH          Use given base PATH for KW trace file
+  --with-x                use the X Window System
   --with-image=PATH       Use given base PATH for IMAGE libraries and header
                           files
   --with-hershey=PATH     Use given base PATH for HERSHEY libraries and header
@@ -2629,7 +2629,7 @@ MILI_VERSION=V23_01
 
 
 #TARGET_DNS_DOMAIN="`(dnsdomainname) 2> /dev/null`"
-TARGET_DNS_DOMAIN="somewhere.gov"
+TARGET_DNS_DOMAIN="llnl.gov"
 
 
 cat >>confdefs.h <<_ACEOF
@@ -6134,12 +6134,500 @@ fi
 
 
 
-#      else
-#         CONFIGURE_X11
+      else
 
-#         CONFIGURE_MESA
+	PATH_SET="false"
+	STD_PATHS="/usr /usr/X11R6 /usr/local"
+	OSMESA_HOME=""
+	OSMESA_INCLUDE_PATHS=""
+	OSMESA_LIBRARY_PATHS=""
+	OSMESA_LIBRARY=""
+	OSMESA_DEFINES=""
+	BATCH_DEFINES=""
 
-#         CONFIGURE_OSMESA
+
+# Check whether --with-mesa was given.
+if test "${with_mesa+set}" = set; then :
+  withval=$with_mesa;
+			OSMESA_HOME="${withval}"
+			as_ac_File=`$as_echo "ac_cv_file_$OSMESA_HOME/lib64" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $OSMESA_HOME/lib64" >&5
+$as_echo_n "checking for $OSMESA_HOME/lib64... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$OSMESA_HOME/lib64"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+					as_ac_File=`$as_echo "ac_cv_file_$OSMESA_HOME/lib64/libOSMesa.a" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $OSMESA_HOME/lib64/libOSMesa.a" >&5
+$as_echo_n "checking for $OSMESA_HOME/lib64/libOSMesa.a... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$OSMESA_HOME/lib64/libOSMesa.a"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+							OSMESA_LIBRARY_PATHS=$OSMESA_HOME/lib64
+							PATH_SET="true"
+
+else
+
+							as_ac_File=`$as_echo "ac_cv_file_$OSMESA_HOME/lib64/libOSMesa.so" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $OSMESA_HOME/lib64/libOSMesa.so" >&5
+$as_echo_n "checking for $OSMESA_HOME/lib64/libOSMesa.so... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$OSMESA_HOME/lib64/libOSMesa.so"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+									OSMESA_LIBRARY_PATHS=$OSMESA_HOME/lib64
+									PATH_SET="true"
+
+
+fi
+
+
+
+fi
+
+
+else
+
+					as_ac_File=`$as_echo "ac_cv_file_$OSMESA_HOME/lib/libOSMesa.a" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $OSMESA_HOME/lib/libOSMesa.a" >&5
+$as_echo_n "checking for $OSMESA_HOME/lib/libOSMesa.a... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$OSMESA_HOME/lib/libOSMesa.a"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+							OSMESA_LIBRARY_PATHS=$OSMESA_HOME/lib
+							PATH_SET="true"
+
+else
+
+							as_ac_File=`$as_echo "ac_cv_file_$OSMESA_HOME/lib/libOSMesa.so" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $OSMESA_HOME/lib/libOSMesa.so" >&5
+$as_echo_n "checking for $OSMESA_HOME/lib/libOSMesa.so... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$OSMESA_HOME/lib/libOSMesa.so"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+									OSMESA_LIBRARY_PATHS=$OSMESA_HOME/lib
+									PATH_SET="true"
+
+else
+
+									as_ac_File=`$as_echo "ac_cv_file_$OSMESA_HOME/libOSMesa.a" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $OSMESA_HOME/libOSMesa.a" >&5
+$as_echo_n "checking for $OSMESA_HOME/libOSMesa.a... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$OSMESA_HOME/libOSMesa.a"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+											OSMESA_LIBRARY_PATHS=$OSMESA_HOME
+											PATH_SET="true"
+
+else
+
+											as_ac_File=`$as_echo "ac_cv_file_$OSMESA_HOME/libOSMesa.so" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $OSMESA_HOME/libOSMesa.so" >&5
+$as_echo_n "checking for $OSMESA_HOME/libOSMesa.so... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$OSMESA_HOME/libOSMesa.so"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+													OSMESA_LIBRARY_PATHS=$OSMESA_HOME
+													PATH_SET="true"
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
+			if test "$PATH_SET" = "true"; then
+				{ $as_echo "$as_me:${as_lineno-$LINENO}: result: Using MESA Path : $OSMESA_LIBRARY_PATHS" >&5
+$as_echo "Using MESA Path : $OSMESA_LIBRARY_PATHS" >&6; }
+			fi
+
+
+fi
+
+	suffix="a"
+
+	# lets check the usual suspects for Mesa libraries
+	# Lastly check in VisIt directories - AIX only
+
+	if test "$PATH_SET" = "false"; then
+		as_ac_File=`$as_echo "ac_cv_file_$X11_PATH/libOSMesa.a" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $X11_PATH/libOSMesa.a" >&5
+$as_echo_n "checking for $X11_PATH/libOSMesa.a... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$X11_PATH/libOSMesa.a"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+				OSMESA_HOME="$X11_HOME"
+				OSMESA_LIBRARY_PATHS="$X11_PATH"
+				PATH_SET="true"
+
+else
+
+				as_ac_File=`$as_echo "ac_cv_file_$X11_PATH/libOSMesa.so" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $X11_PATH/libOSMesa.so" >&5
+$as_echo_n "checking for $X11_PATH/libOSMesa.so... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$X11_PATH/libOSMesa.so"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+						OSMESA_HOME="$X11_HOME"
+						OSMESA_LIBRARY_PATHS="$X11_PATH"
+						PATH_SET="true"
+						suffix="so"
+
+
+else
+
+						for path in $STD_PATHS; do
+						as_ac_File=`$as_echo "ac_cv_file_$path/lib64/libOSMesa.a" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $path/lib64/libOSMesa.a" >&5
+$as_echo_n "checking for $path/lib64/libOSMesa.a... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$path/lib64/libOSMesa.a"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+								OSMESA_HOME=$path
+								OSMESA_LIBRARY_PATHS=$OSMESA_HOME/lib64
+								PATH_SET="true"
+								break
+
+else
+
+								as_ac_File=`$as_echo "ac_cv_file_$path/lib64/libOSMesa.so" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $path/lib64/libOSMesa.so" >&5
+$as_echo_n "checking for $path/lib64/libOSMesa.so... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$path/lib64/libOSMesa.so"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+										OSMESA_HOME=$path
+										OSMESA_LIBRARY_PATHS=$OSMESA_HOME/lib64
+										PATH_SET="true"
+										suffix="so"
+										break
+
+else
+
+										as_ac_File=`$as_echo "ac_cv_file_$path/lib/libOSMesa.a" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $path/lib/libOSMesa.a" >&5
+$as_echo_n "checking for $path/lib/libOSMesa.a... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$path/lib/libOSMesa.a"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+												OSMESA_HOME=$path
+												OSMESA_LIBRARY_PATHS=$OSMESA_HOME/lib
+												PATH_SET="true"
+												break
+
+else
+
+												as_ac_File=`$as_echo "ac_cv_file_$path/lib/libOSMesa.so" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $path/lib/libOSMesa.so" >&5
+$as_echo_n "checking for $path/lib/libOSMesa.so... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$path/lib/libOSMesa.so"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+														OSMESA_HOME=$path
+														OSMESA_LIBRARY_PATHS=$OSMESA_HOME
+														PATH_SET="true"
+														suffix="so"
+														break
+
+
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
+
+
+fi
+
+						done
+
+
+fi
+
+
+
+fi
+
+	fi
+	NO_MESA_X11_LIBS=""
+	SET_OSMESA="false"
+	if test "$PATH_SET" = "true"; then
+		NO_MESA_X11_LIBS=$X11_LIBS
+		OSMESA_LIBRARY=" -lOSMesa"
+		MESAFILES="libGL.$suffix libGLU.$suffix libGLw.$suffix"
+		for file in $MESAFILES; do
+			as_ac_File=`$as_echo "ac_cv_file_$OSMESA_LIBRARY_PATHS/$file" | $as_tr_sh`
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for $OSMESA_LIBRARY_PATHS/$file" >&5
+$as_echo_n "checking for $OSMESA_LIBRARY_PATHS/$file... " >&6; }
+if eval \${$as_ac_File+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  test "$cross_compiling" = yes &&
+  as_fn_error $? "cannot check for file existence when cross compiling" "$LINENO" 5
+if test -r "$OSMESA_LIBRARY_PATHS/$file"; then
+  eval "$as_ac_File=yes"
+else
+  eval "$as_ac_File=no"
+fi
+fi
+eval ac_res=\$$as_ac_File
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+if eval test \"x\$"$as_ac_File"\" = x"yes"; then :
+
+					if test "$suffix" = "a";then
+						LIBNAME=`echo $file | sed -e 's|lib||' | sed -e 's|.a||'`
+					else
+						LIBNAME=`echo $file | sed -e 's|lib||' | sed -e 's|.so||'`
+					fi
+					RMNAME="-l$LIBNAME"
+					COMMAND="sed -e s|$RMNAME||"
+					NO_MESA_X11_LIBS=`echo $NO_MESA_X11_LIBS | $COMMAND`
+					OSMESA_LIBRARY="$OSMESA_LIBRARY -l$LIBNAME "
+
+
+fi
+
+		done
+
+		OSMESA_INCLUDE_PATHS==$OSMESA_HOME/include
+		OSMESA_LIBRARY_PATHS="-L$OSMESA_LIBRARY_PATHS"
+		BATCH_DEFINES="-DSERIAL_BATCH"
+
+
+		CONFIG_OPTIONS="$CONFIG_OPTIONS --with-osmesa=$OSMESA_HOME "
+
+$as_echo "#define HAVE_OSMESA 1" >>confdefs.h
+
+
+$as_echo "#define HAVE_BATCH 1" >>confdefs.h
+
+		OSMESA_ENABLE="True"
+		BATCH_ENABLE="True"
+
+	else
+
+		if test  "$OS_NAME" = "AIX";then
+		#
+		# On AIX Platforms, use our own OSMesa build
+     	        #
+	    BATCH_DEFINES="-DSERIAL_BATCH"
+	    OSMESA_HOME=../../ext/Mesa/AIX
+	    OSMESA_LIBRARY_PATHS=-L$OSMESA_HOME/lib
+	    OSMESA_LIBRARY=" -lOSMesa -lMesaGL -lGLU -lGLw -lXm -lX11 -lXt -lOSMesa "
+			SET_OSMESA="true"
+			PATH_SET="true"
+			BATCH_ENABLE="True"
+
+		else
+			OSMESA_ENABLE="False"
+			BATCH_ENABLE="False"
+		fi
+	fi
+
+
+	#  MESA Library Options
+
+
+
+
+
+
+
+
+
+
+
+         # gui.c unconditionally includes X11/Motif headers, so even
+         # SERIAL_BATCH builds must link against X11/Xt/Xm.
+         NO_MESA_X11_LIBS="-lX11 -lXt -lXm"
 
       fi
 

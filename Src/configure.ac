@@ -97,7 +97,7 @@ AC_SUBST([MILI_VERSION])
 
 AC_REVISION($Revision: 1.7 $)
 #TARGET_DNS_DOMAIN="`(dnsdomainname) 2> /dev/null`"
-TARGET_DNS_DOMAIN="somewhere.gov"
+TARGET_DNS_DOMAIN="llnl.gov"
 AC_PREREQ(2.59)
 AC_DEFINE_UNQUOTED(CONFIG_CMD, "$0 $@", [Configure command])
 CONFIG_CMD="configure $@"
@@ -262,13 +262,12 @@ case "$TARGET_DNS_DOMAIN" in
       
       if test "$OS_NAME" = "IRIX64" -o "$OS_NAME" = "IRIX"; then
          CONFIGURE_SGI_GRAPHICS
-#      else
-#         CONFIGURE_X11
-
-#         CONFIGURE_MESA
-
-#         CONFIGURE_OSMESA
-         []
+      else
+         CONFIGURE_OSMESA
+         # gui.c unconditionally includes X11/Motif headers, so even
+         # SERIAL_BATCH builds must link against X11/Xt/Xm.
+         NO_MESA_X11_LIBS="-lX11 -lXt -lXm"
+         AC_SUBST(NO_MESA_X11_LIBS)
       fi
       
       CONFIGURE_KLOCWORK
