@@ -10,17 +10,17 @@ Top-level progress tracker. Detailed design for each topic lives in
 
 Must fix (users will hit these immediately):
 
-- [ ] **Implement `q_results` server-side** — `list_fields` MCP tool and `field.list()` / `field.info()` all error with `unknown_command` today. A user asking "what fields are available?" gets a crash instead of an answer.
-- [ ] **Implement `q_materials` server-side** — `materials.list()` errors the same way. Users can `hide`/`show` by id but can't discover what materials exist.
-- [ ] **Screenshot format usable by MCP clients** — `outrgb` produces SGI RGB files; most MCP clients (Claude Desktop, etc.) can't display that. Either enable PNG in the build (`--enable-nopng` removed) or add Python-side conversion (PIL/`rgb→png`). Without this, `screenshot` is effectively broken for MCP users.
+- [x] **Implement `q_results` server-side** — iterates primal/derived hash tables; `field.list()` and `list_fields` MCP tool now work.
+- [x] **Implement `q_materials` server-side** — iterates material arrays; `materials.list()` and new `list_materials` MCP tool now work.
+- [x] **Screenshot format usable by MCP clients** — Python-side SGI→PNG conversion in `griz/_sgi.py` (stdlib only, no Pillow). `screenshot()` returns PNG bytes by default; MCP tool returns `Image(format="png")`.
 - [x] **Basic worker command timeout** — `Worker.cmd()` already has a 30s default timeout (per-call configurable via `timeout=` kwarg). Raises `WorkerError` on timeout.
 
 Should fix (rough edges that erode trust):
 
 - [x] **Clear error when `griz-server` not on PATH** — `_find_griz_server()` already checks `GRIZ_BIN`, `PATH`, and repo build dirs with a clear error message.
 - [ ] **End-to-end smoke test through the MCP protocol** — verify the full flow (MCP client → `griz-mcp` → `griz` → `griz-server`) with a real Mili database, not just unit tests with mocks.
-- [ ] **MCP tool descriptions tuned for LLM consumption** — tool docstrings should list available field names, explain what a "state" is, etc. so the LLM can use the tools without guessing.
-- [ ] **Update `shared/output-capture.md`** — the doc describes source-level `griz_out()`/`griz_err()` sinks but the implementation uses fd-level `dup2` redirect. Align the doc to what shipped.
+- [x] **MCP tool descriptions tuned for LLM consumption** — all 15 tool docstrings updated with field/component names, state explanations, axis directions, and cross-references. Added `list_materials` tool.
+- [x] **Update `shared/output-capture.md`** — updated to describe the fd-level `dup2` capture that shipped, replacing the originally planned `griz_out()`/`griz_err()` source-level approach.
 
 ### Planning documents (design complete when checked)
 
@@ -66,17 +66,17 @@ Should fix (rough edges that erode trust):
 - [x] Unit tests with mocked worker (>90% coverage) *(non-worker coverage ≥93% per module: `__init__` 100%, `exceptions` 100%, `field` 100%, `view` 100%, `selection` 100%, `materials` 97%, `time_` 97%, `results_map` 94%, `session` 93%. 51 new unit tests in `tests/test_results_map.py` + `tests/test_session.py`; mock worker at `tests/mock_worker.py` is a no-subprocess stand-in used for behavioral coverage.)*
 - [x] `pyproject.toml` and pip-installable from `pygriz/` *(package name `llnl-griz`, imports as `griz`. `pyproject.toml` adds `pyyaml>=6.0` and a `test` extra with `pytest-cov`. `tool.hatch.build.targets.wheel.force-include` maps the symlinked YAML into the wheel. Note: lives at `pygriz/` rather than `Src/python/griz/` to keep Python out of the C autotools tree; promoting to `Src/python/griz/` is a Phase 5 packaging concern.)*
 
-Gated on Phase 2 server work (tracked under shared/query-commands.md): `field.list`, `field.info`, `materials.list`, `materials.show_only` all depend on server-side `q_results` / `q_result_info` / `q_materials` which are not yet implemented. They are wired through so the method surface matches the design; they raise `GrizCommandError(code="unknown_command")` until the queries land.
+Previously gated on Phase 2 server work: `q_results` and `q_materials` are now implemented. `field.list`, `materials.list`, and `materials.show_only` work end-to-end. `field.info` still depends on `q_result_info` (not yet implemented).
 
 ### Phase 4 — MCP adapter ([04](mcp/04-mcp-adapter.md), [08 §2.4](mcp/08-phasing.md))
 
-- [x] `griz-mcp` MCP server bootstraps and registers tools *(FastMCP 3.x at `pygriz_mcp/`; `mcp = FastMCP("griz-mcp")` with 14 `@mcp.tool` functions in `server.py`; entry point `griz-mcp` via `[project.scripts]`; module-level session singleton in `session.py` with factory injection for tests. 36 tests, 91% coverage.)*
+- [x] `griz-mcp` MCP server bootstraps and registers tools *(FastMCP 3.x at `pygriz_mcp/`; `mcp = FastMCP("griz-mcp")` with 15 `@mcp.tool` functions in `server.py`; entry point `griz-mcp` via `[project.scripts]`; module-level session singleton in `session.py` with factory injection for tests. 38 tests.)*
 - [x] Database tools: `open_database`, `close_database`
 - [x] Field tools: `show_field`, `list_fields`
 - [x] View tools: `rotate_view`, `reset_view`
 - [x] Time tools: `set_time_state`, `animate`
-- [x] Material tools: `hide_materials`, `show_materials`
-- [x] `screenshot` returns MCP `ImageContent` *(returns `fastmcp.utilities.types.Image(data=bytes, format="rgb")`; format is SGI RGB since default build uses `--enable-nopng`)*
+- [x] Material tools: `hide_materials`, `show_materials`, `list_materials`
+- [x] `screenshot` returns MCP `ImageContent` *(returns `fastmcp.utilities.types.Image(data=bytes, format="png")`; Python-side SGI→PNG conversion via `griz/_sgi.py`)*
 - [x] `get_state`, `restart_session`, `raw_command`
 - [x] End-to-end MCP client transcript in README *(initialize → tools/list → open_database → show_field → rotate + screenshot → animate → close; see `pygriz_mcp/README.md`)*
 - [x] Package publishable from `pygriz_mcp/` *(pip-installable via `uv sync`; lives at repo root parallel to `pygriz/` following the same convention — promotion to `Src/python/griz_mcp/` is a Phase 5 packaging concern)*

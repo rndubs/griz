@@ -15,6 +15,7 @@ from griz_mcp.server import (
     get_state,
     hide_materials,
     list_fields,
+    list_materials,
     open_database,
     raw_command,
     reset_view,
@@ -186,6 +187,19 @@ class TestShowMaterials:
         state = json.loads(result)
         assert "time_state" in state
         mock_griz[0].materials.show.assert_called_once_with([3, 4])
+
+
+class TestListMaterials:
+    def test_success(self, mock_griz):
+        open_database("/fake/db.plt")
+        result = list_materials()
+        mats = json.loads(result)
+        assert isinstance(mats, list)
+        assert mats[0]["id"] == 1
+
+    def test_no_session_raises(self):
+        with pytest.raises(ToolError, match="No database is open"):
+            list_materials()
 
 
 # ------------------------------------------------------------------ #

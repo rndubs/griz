@@ -5,9 +5,8 @@ planning/mcp/03-python-api.md. A `Griz` instance with no database is
 inert — the worker spawns on the first `open()` call and is torn down
 in `close()` / `__exit__`.
 
-`screenshot()` currently routes through `outrgb`. PNG/JPEG support is
-gated on rebuilding the server without `--enable-nopng` /
-`--enable-nojpeg` (see CLAUDE.md §Build).
+`screenshot()` uses `outrgb` to capture SGI RGB frames and converts
+them to PNG in Python via the `_sgi` module (no Pillow required).
 """
 
 from __future__ import annotations
@@ -140,18 +139,28 @@ class Griz:
     def screenshot(
         self,
         path: str | os.PathLike[str] | None = None,
+        *,
+        format: str = "png",
     ) -> str | bytes:
-        """Capture the current frame via `outrgb`.
+        """Capture the current frame.
 
-        If `path` is given, writes the SGI RGB file there and returns the
-        absolute path as a string. If `path` is None, writes to a temp
-        file, reads its bytes, and returns them.
+        If `path` is given, writes the image file there and returns the
+        absolute path as a string. If `path` is None, returns the image
+        as PNG bytes (default) or raw SGI RGB bytes if ``format="rgb"``.
         """
+        from griz._sgi import sgi_to_png
+
         worker = self._require_worker()
 
         if path is not None:
             out_path = Path(path).resolve()
             worker.cmd(f"outrgb {out_path}")
+            if format == "png" and not str(out_path).lower().endswith(".rgb"):
+                with open(out_path, "rb") as fh:
+                    rgb_data = fh.read()
+                png_data = sgi_to_png(rgb_data)
+                with open(out_path, "wb") as fh:
+                    fh.write(png_data)
             return str(out_path)
 
         tmp_dir = _preferred_tmpdir()
@@ -160,7 +169,10 @@ class Griz:
         try:
             worker.cmd(f"outrgb {tmp_path}")
             with open(tmp_path, "rb") as fh:
-                return fh.read()
+                rgb_data = fh.read()
+            if format == "png":
+                return sgi_to_png(rgb_data)
+            return rgb_data
         finally:
             try:
                 os.unlink(tmp_path)

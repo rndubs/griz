@@ -30,6 +30,9 @@ class MockGriz:
         self._time.animate.return_value = [self._state]
         self._materials.hide.return_value = self._state
         self._materials.show.return_value = self._state
+        self._materials.list.return_value = [
+            {"id": 1, "visible": True, "enabled": True},
+        ]
 
     def open(self, path):
         self._open = True
@@ -49,8 +52,9 @@ class MockGriz:
     def raw(self, command, **kwargs):
         return {"status": "ok", "command": command}
 
-    def screenshot(self):
-        return b"\x01\x01" + b"\x00" * 100
+    def screenshot(self, **kwargs):
+        # Return minimal valid PNG bytes for testing
+        return b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 
     @property
     def field(self):

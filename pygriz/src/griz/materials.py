@@ -1,9 +1,8 @@
 """Material visibility controls.
 
 Griz exposes `vis <ids…>` and `invis <ids…>` for material visibility
-(see Src/interpret.c ~line 3156). `show_only` and `list` depend on the
-server's `q_materials` query, which is not yet implemented — those
-methods will surface `GrizCommandError` until it lands.
+(see Src/interpret.c ~line 3156). `list` and `show_only` use the
+server's `q_materials` query to enumerate materials.
 """
 
 from __future__ import annotations

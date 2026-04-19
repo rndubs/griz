@@ -26,7 +26,13 @@ def _err(e: Exception) -> ToolError:
 
 @mcp.tool
 def open_database(path: str) -> str:
-    """Open a Griz database file. Returns the initial viewer state."""
+    """Open a Mili simulation database for visualization.
+
+    `path` is the path to a Mili plotfile, typically ending in `.plt` or
+    `.pltA` (e.g. ``/path/to/simulation/run.pltA``). Returns the initial
+    viewer state including time range, material count, and viewport size.
+    Must be called before any other tool.
+    """
     try:
         return session.open_database(path)
     except (GrizError, FileNotFoundError, OSError) as e:
@@ -35,7 +41,7 @@ def open_database(path: str) -> str:
 
 @mcp.tool
 def close_database() -> str:
-    """Close the current database and tear down the session."""
+    """Close the current database and shut down the visualization server."""
     try:
         return session.close_database()
     except GrizError as e:
@@ -49,7 +55,18 @@ def close_database() -> str:
 
 @mcp.tool
 def show_field(name: str, component: str | None = None) -> str:
-    """Display a field on the mesh. Returns the updated viewer state."""
+    """Display a result field on the mesh with a color map.
+
+    Common fields and components:
+      stress: xx, yy, zz, xy, yz, zx, von_mises, pressure
+      strain: xx, yy, zz, xy, yz, zx
+      displacement: x, y, z, magnitude
+      temperature: (no component needed — scalar field)
+
+    Example: ``show_field("stress", "von_mises")`` shows von Mises stress.
+    Use ``list_fields()`` to see all available fields in the current database.
+    Returns the updated viewer state.
+    """
     try:
         griz = session.require_session()
         result = griz.field.show(name, component=component)
@@ -60,7 +77,13 @@ def show_field(name: str, component: str | None = None) -> str:
 
 @mcp.tool
 def list_fields() -> str:
-    """List all fields available in the current database."""
+    """List all result fields available in the loaded database.
+
+    Returns a JSON array of objects with ``name`` (the Griz command name)
+    and ``title`` (human-readable description). Use the ``name`` value
+    with ``show_field()`` to display a field. Both primal (raw database)
+    and derived (computed) results are included.
+    """
     try:
         griz = session.require_session()
         result = griz.field.list()
@@ -76,7 +99,12 @@ def list_fields() -> str:
 
 @mcp.tool
 def rotate_view(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> str:
-    """Rotate the camera by the given angles (degrees). Returns the updated state."""
+    """Rotate the camera by the given angles in degrees around each axis.
+
+    Positive X rotates the model "down" (nose toward you), positive Y
+    rotates "right", positive Z rotates clockwise. Rotations accumulate.
+    Returns the updated viewer state.
+    """
     try:
         griz = session.require_session()
         result = griz.view.rotate(x=x, y=y, z=z)
@@ -87,7 +115,10 @@ def rotate_view(x: float = 0.0, y: float = 0.0, z: float = 0.0) -> str:
 
 @mcp.tool
 def reset_view() -> str:
-    """Reset the camera to the default home view. Returns the updated state."""
+    """Reset the camera to the default home orientation (isometric view).
+
+    Undoes all prior rotations. Returns the updated viewer state.
+    """
     try:
         griz = session.require_session()
         result = griz.view.reset()
@@ -103,7 +134,13 @@ def reset_view() -> str:
 
 @mcp.tool
 def set_time_state(state: int) -> str:
-    """Jump to the given time state index. Returns the updated viewer state."""
+    """Jump to the given time-state index (0-based).
+
+    Simulations store results at discrete time steps called "states".
+    State 0 is the first output time; the maximum is reported in the
+    ``state_count`` field of ``get_state()``. Returns the updated viewer
+    state including the new ``time_value``.
+    """
     try:
         griz = session.require_session()
         result = griz.time.set_state(state)
@@ -119,7 +156,14 @@ def animate(
     step: int = 1,
     delay: float = 0.0,
 ) -> str:
-    """Animate through time states. Returns the list of per-frame states."""
+    """Step through a range of time states, rendering each frame.
+
+    `start` and `end` default to the first and last states. `step`
+    controls the increment (use negative to go backward). `delay` is
+    seconds to pause between frames (useful for visual pacing). Call
+    ``screenshot()`` separately to capture the final frame as an image.
+    Returns a JSON array of per-frame viewer states.
+    """
     try:
         griz = session.require_session()
         frames = griz.time.animate(start=start, end=end, step=step, delay=delay)
@@ -135,7 +179,12 @@ def animate(
 
 @mcp.tool
 def hide_materials(material_ids: list[int]) -> str:
-    """Hide the given materials by ID. Returns the updated state."""
+    """Hide one or more materials by their 1-based ID.
+
+    Hidden materials are removed from the rendered image but stay in the
+    database. Use ``list_materials()`` to discover available IDs and
+    current visibility. Returns the updated viewer state.
+    """
     try:
         griz = session.require_session()
         result = griz.materials.hide(material_ids)
@@ -146,12 +195,32 @@ def hide_materials(material_ids: list[int]) -> str:
 
 @mcp.tool
 def show_materials(material_ids: list[int]) -> str:
-    """Show the given materials by ID. Returns the updated state."""
+    """Make previously hidden materials visible again by their 1-based ID.
+
+    Use ``list_materials()`` to see which materials are currently hidden.
+    Returns the updated viewer state.
+    """
     try:
         griz = session.require_session()
         result = griz.materials.show(material_ids)
         return json.dumps(result, default=str)
     except (GrizError, RuntimeError, ValueError) as e:
+        raise _err(e) from e
+
+
+@mcp.tool
+def list_materials() -> str:
+    """List all materials in the loaded database with their visibility.
+
+    Returns a JSON array of objects, each with ``id`` (1-based),
+    ``visible`` (bool), and ``enabled`` (bool). Use the ``id`` values
+    with ``hide_materials()`` and ``show_materials()``.
+    """
+    try:
+        griz = session.require_session()
+        result = griz.materials.list()
+        return json.dumps(result, default=str)
+    except (GrizError, RuntimeError) as e:
         raise _err(e) from e
 
 
@@ -162,15 +231,20 @@ def show_materials(material_ids: list[int]) -> str:
 
 @mcp.tool
 def screenshot() -> Image:
-    """Capture the current frame and return it as an image."""
+    """Capture the current rendered frame as a PNG image.
+
+    Returns the image directly. The visualization must have an open
+    database with a field displayed to produce a meaningful image.
+    The default framebuffer is 1024x1024 pixels.
+    """
     try:
         griz = session.require_session()
-        data = griz.screenshot()
+        data = griz.screenshot(format="png")
         if isinstance(data, bytes):
-            return Image(data=data, format="rgb")
+            return Image(data=data, format="png")
         # path was returned — read it
         with open(data, "rb") as f:
-            return Image(data=f.read(), format="rgb")
+            return Image(data=f.read(), format="png")
     except (GrizError, RuntimeError, OSError) as e:
         raise _err(e) from e
 
@@ -182,7 +256,12 @@ def screenshot() -> Image:
 
 @mcp.tool
 def get_state() -> str:
-    """Return the current viewer state as JSON."""
+    """Return the current viewer state as JSON.
+
+    The state includes: ``time_state``, ``time_value``, ``state_count``,
+    ``max_time_value``, ``current_field``, and ``viewport`` dimensions.
+    Useful for checking what's displayed before taking a screenshot.
+    """
     try:
         return session.get_status()
     except GrizError as e:
@@ -191,7 +270,11 @@ def get_state() -> str:
 
 @mcp.tool
 def restart_session() -> str:
-    """Close and discard the current Griz session."""
+    """Close the current Griz session and release all resources.
+
+    After restarting, call ``open_database()`` to begin a new session.
+    Use this to recover from errors or switch to a different database.
+    """
     try:
         return session.restart()
     except GrizError as e:
@@ -200,7 +283,13 @@ def restart_session() -> str:
 
 @mcp.tool
 def raw_command(command: str) -> str:
-    """Send a raw Griz command and return the full response."""
+    """Send a raw Griz command string and return the full JSON response.
+
+    Escape hatch for commands not exposed as dedicated tools. The
+    ``command`` is sent directly to the Griz engine (e.g. ``"rview"``
+    to reset the view, ``"help"`` for the built-in help text). Returns
+    the raw response including any ``stdout`` captured from the command.
+    """
     try:
         griz = session.require_session()
         result = griz.raw(command)

@@ -5,11 +5,8 @@ results map and then drives the server with `show <griz-name>`. The
 server commands used here come from Griz's interpret.c and the planning
 notes in 03-python-api.md §4.1.
 
-`list()` and `info()` depend on `q_results` / `q_result_info` which are
-not yet implemented server-side (tracked in planning/shared/query-
-commands.md). The stubs here let callers exercise the code path; they
-will surface `GrizCommandError` with `code=="unknown_command"` until the
-server-side query lands.
+`list()` uses the server's `q_results` query to enumerate available
+fields. `info()` uses `q_result_info` (not yet implemented server-side).
 """
 
 from __future__ import annotations
