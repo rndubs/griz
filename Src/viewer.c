@@ -2898,6 +2898,149 @@ process_serial_batch_mode( char *batch_input_file_name, Analysis *analy )
 
 #endif /* SERIAL_BATCH */
 
+#ifdef GRIZ_SERVER_BUILD
+
+/************************************************************
+ * TAG( process_server_mode_stdio )
+ *
+ * Phase 1 server loop: initialize Griz for headless operation,
+ * open the database, bring up an OSMesa context, and drive the
+ * existing command interpreter with plain-text lines read from
+ * stdin. "quit", "exit", "end", or EOF on stdin ends the loop.
+ *
+ * The JSON envelope and handshake described in planning/mcp/05-
+ * protocol.md are deferred to Phase 2; for now the only output
+ * sentinel is a single "READY\n" line emitted once setup is
+ * complete.
+ */
+#define GRIZ_SERVER_MAX_LINE 4096
+
+static Bool_type
+server_is_terminator( const char *s )
+{
+    return ( strcmp( s, "quit" ) == 0
+          || strcmp( s, "exit" ) == 0
+          || strcmp( s, "end"  ) == 0 );
+}
+
+int
+process_server_mode_stdio( const char *db_path, int width, int height )
+{
+    Analysis *analy;
+    int rc;
+    char line[GRIZ_SERVER_MAX_LINE];
+
+    if ( db_path == NULL || db_path[0] == '\0' )
+    {
+        fprintf( stderr, "griz-server: database path is required\n" );
+        return 1;
+    }
+
+    memset( &env, 0, sizeof( Environ ) );
+
+    analy   = NEW( Analysis, "Analysis struct" );
+    session = NEW( Session,  "Session struct"  );
+
+    env.win32                           = FALSE;
+    env.history_input_active            = FALSE;
+    env.animate_active                  = FALSE;
+    env.animate_reverse                 = FALSE;
+    env.show_dialog                     = FALSE;
+    env.foreground                      = TRUE;
+    env.quiet_mode                      = TRUE;
+    env.model_history_logging           = FALSE;
+    env.ti_enable                       = TRUE;
+    env.griz_id                         = 0;
+    env.bname                           = NULL;
+    env.checkresults                    = FALSE;
+    env.window_size_set_on_command_line = ( width > 0 && height > 0 );
+
+    strncpy( env.plotfile_name, db_path, MAXPATHLENGTH - 1 );
+    env.plotfile_name[MAXPATHLENGTH - 1] = '\0';
+
+    /* Server mode is a headless variant of serial batch: reuse the
+     * existing flag so code paths that gate on "no X11 available"
+     * continue to behave correctly. */
+    serial_batch_mode = TRUE;
+
+    if ( width > 0 && height > 0 )
+        set_window_size( width, height );
+
+    init_griz_session( session );
+    analy_ptr = analy;
+
+    if ( !open_analysis( env.plotfile_name, analy, FALSE, FALSE ) )
+    {
+        fprintf( stderr, "griz-server: failed to open database '%s'\n",
+                 db_path );
+        return 1;
+    }
+
+    check_for_free_nodes( analy );
+    env.curr_analy = analy;
+    init_plot_colors();
+
+    rc = OffscreenContext( offscreen,
+                           get_window_width(),
+                           get_window_height(), 0 );
+    if ( rc < 0 )
+    {
+        fprintf( stderr,
+                 "griz-server: OSMesa context init failed (rc=%d)\n", rc );
+        return 1;
+    }
+
+    init_mesh_window( analy );
+    analy->update_display( analy );
+
+    env.griz_pid = getppid();
+
+    fputs( "READY\n", stdout );
+    fflush( stdout );
+
+    while ( fgets( line, sizeof( line ), stdin ) != NULL )
+    {
+        size_t len = strlen( line );
+        while ( len > 0
+                && ( line[len - 1] == '\n' || line[len - 1] == '\r' ) )
+            line[--len] = '\0';
+
+        if ( line[0] == '\0' || line[0] == '#' )
+            continue;
+
+        if ( server_is_terminator( line ) )
+            break;
+
+        parse_command( line, analy );
+        fflush( stdout );
+        fflush( stderr );
+    }
+
+    /* Remove the per-session history file the same way batch mode does. */
+    if ( analy->p_histfile )
+    {
+        char comment[MAXPATHLENGTH + 8];
+        snprintf( comment, sizeof( comment ), "rm %s", analy->hist_fname );
+        fclose( analy->p_histfile );
+        analy->p_histfile = NULL;
+        analy->hist_fname[0] = '\0';
+        system( comment );
+    }
+
+    /* Phase 1 deliberately leaves OSMesa and analysis teardown to the
+     * operating system: the analogous batch cleanup path (free(offscreen)
+     * + OSMesaDestroyContext + close_analysis) double-frees on our code
+     * path because write_image_file() and friends have already released
+     * the render buffer. The batch binary never notices because it
+     * reaches quit(0)->exit() before glibc audits the heap. Phase 2's
+     * output-capture work will rewire this so explicit teardown is
+     * safe. */
+
+    return 0;
+}
+
+#endif /* GRIZ_SERVER_BUILD */
+
 /************************************************************
  * TAG( usage )
  *

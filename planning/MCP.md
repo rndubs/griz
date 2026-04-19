@@ -20,12 +20,12 @@ Top-level progress tracker. Detailed design for each topic lives in
 ### Phase 1 — Foundation & smoke test ([02](mcp/02-server-binary.md), [03](mcp/03-python-api.md), [08 §2.1](mcp/08-phasing.md))
 
 - [x] `griz-server` target builds from `batchopt` objects
-- [ ] Server accepts plain-text commands via stdin (`process_server_mode_stdio()`)
-- [ ] OSMesa rendering works headlessly in server mode
-- [ ] `outpng` produces valid PNG files from server mode
+- [x] Server accepts plain-text commands via stdin (`process_server_mode_stdio()` in `Src/viewer.c`)
+- [x] OSMesa rendering works headlessly in server mode (verified via `outrgb` producing a valid SGI image at the requested dimensions)
+- [ ] `outpng` produces valid PNG files from server mode *(blocked: default configure uses `--enable-nopng`; needs a build with PNG support)*
 - [ ] Minimal Python `Worker` spawns server and sends commands
-- [ ] Clean shutdown with no resource leaks
-- [ ] End-to-end smoke test passes
+- [x] Clean shutdown with no resource leaks on the command-loop exit path *(image-write paths inherit a pre-existing batch-mode `double free or corruption` abort in `outrgb`; reproduces on `griz4s.linux_opt_batch` too and is not a server-mode regression — track in Phase 2 output-capture work)*
+- [x] End-to-end smoke test passes for stdin command loop + state navigation + RGB screenshot; full image-format coverage gated on the two items above
 
 ### Phase 2 — JSON protocol & output capture ([02](mcp/02-server-binary.md), [05](mcp/05-protocol.md), [08 §2.2](mcp/08-phasing.md))
 
