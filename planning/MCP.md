@@ -1,5 +1,173 @@
 # Griz MCP Server — Design & Implementation Plan
 
+## Quick Start
+
+### 1. Build `griz-server`
+
+Requires an LLNL TOSS host with Mili (`/usr/apps/mdg`), OSMesa/X11/Motif,
+and a compiler module loaded (e.g. `intel-classic/2021.6.0-magic`).
+
+```bash
+# From the repo root — builds the headless griz-server binary
+./build.sh server
+```
+
+The binary lands at `Src/GRIZ4-*/bin_server_opt/griz-server`.
+The Python layer auto-discovers it from the repo build tree, so no
+`PATH` changes are needed when running from the repo.
+
+### 2. Install the Python packages
+
+```bash
+# Install the MCP server and its dependency (the griz Python API)
+cd pygriz_mcp
+uv sync --extra test
+```
+
+This installs both `llnl-griz-mcp` and `llnl-griz` (editable, from the
+sibling `pygriz/` directory).
+
+### 3. Run the MCP server
+
+```bash
+# stdio transport (default) — used by MCP clients
+uv run griz-mcp
+```
+
+### 4. Connect an MCP client
+
+Add the following to your MCP client configuration (e.g.
+`~/.claude/claude_desktop_config.json` for Claude Desktop, or
+`.claude/settings.json` → `mcpServers` for Claude Code):
+
+```json
+{
+  "mcpServers": {
+    "griz": {
+      "command": "uv",
+      "args": ["--directory", "/absolute/path/to/pygriz_mcp", "run", "griz-mcp"]
+    }
+  }
+}
+```
+
+Replace `/absolute/path/to/pygriz_mcp` with the actual path to the
+`pygriz_mcp/` directory in your checkout.
+
+### 5. Verify with the smoke tests
+
+```bash
+cd pygriz_mcp
+uv run pytest tests/test_smoke.py -v
+```
+
+These 14 tests exercise the full stack (MCP client → `griz-mcp` →
+`griz.Griz` → `Worker` → `griz-server`) against the `bar71.pltA`
+sample database. They skip automatically if the binary isn't built.
+
+---
+
+## 0. Implementation Status
+
+Top-level progress tracker. Detailed design for each topic lives in
+[`mcp/`](mcp/); phase breakdown and milestone criteria live in
+[`mcp/08-phasing.md`](mcp/08-phasing.md).
+
+### MVP polish — high priority before first user test
+
+Must fix (users will hit these immediately):
+
+- [x] **Implement `q_results` server-side** — iterates primal/derived hash tables; `field.list()` and `list_fields` MCP tool now work.
+- [x] **Implement `q_materials` server-side** — iterates material arrays; `materials.list()` and new `list_materials` MCP tool now work.
+- [x] **Screenshot format usable by MCP clients** — Python-side SGI→PNG conversion in `griz/_sgi.py` (stdlib only, no Pillow). `screenshot()` returns PNG bytes by default; MCP tool returns `Image(format="png")`.
+- [x] **Basic worker command timeout** — `Worker.cmd()` already has a 30s default timeout (per-call configurable via `timeout=` kwarg). Raises `WorkerError` on timeout.
+
+Should fix (rough edges that erode trust):
+
+- [x] **Clear error when `griz-server` not on PATH** — `_find_griz_server()` already checks `GRIZ_BIN`, `PATH`, and repo build dirs with a clear error message.
+- [x] **End-to-end smoke test through the MCP protocol** — 14 tests in `pygriz_mcp/tests/test_smoke.py` exercise the full stack (FastMCP Client → `griz-mcp` tools → `griz.Griz` → `Worker` → `griz-server`) against the real `bar71.pltA` database. Covers: open/close, list/show fields, time navigation, view rotation/reset, materials hide/show/list, screenshot (PNG), animate, raw command, restart, and a full realistic workflow. Skips gracefully if binary or database is missing.
+- [x] **MCP tool descriptions tuned for LLM consumption** — all 15 tool docstrings updated with field/component names, state explanations, axis directions, and cross-references. Added `list_materials` tool.
+- [x] **Update `shared/output-capture.md`** — updated to describe the fd-level `dup2` capture that shipped, replacing the originally planned `griz_out()`/`griz_err()` source-level approach.
+
+### Planning documents (design complete when checked)
+
+- [x] [mcp/01-architecture.md](mcp/01-architecture.md) — system overview & component layering
+- [x] [mcp/02-server-binary.md](mcp/02-server-binary.md) — `griz-server` C implementation
+- [x] [mcp/03-python-api.md](mcp/03-python-api.md) — `griz` Python package design
+- [x] [mcp/04-mcp-adapter.md](mcp/04-mcp-adapter.md) — `griz-mcp` tool surface
+- [x] [mcp/05-protocol.md](mcp/05-protocol.md) — JSON envelope, handshake, error taxonomy
+- [x] [mcp/06-results-mapping.md](mcp/06-results-mapping.md) — YAML-backed field name map
+- [x] [mcp/07-testing.md](mcp/07-testing.md) — unit/integration/perf test strategy
+- [x] [mcp/08-phasing.md](mcp/08-phasing.md) — phase breakdown & milestone criteria
+
+### Phase 1 — Foundation & smoke test ([02](mcp/02-server-binary.md), [03](mcp/03-python-api.md), [08 §2.1](mcp/08-phasing.md))
+
+- [x] `griz-server` target builds from `batchopt` objects
+- [x] Server accepts plain-text commands via stdin (`process_server_mode_stdio()` in `Src/viewer.c`)
+- [x] OSMesa rendering works headlessly in server mode (verified via `outrgb` producing a valid SGI image at the requested dimensions)
+- [ ] `outpng` produces valid PNG files from server mode *(blocked: default configure uses `--enable-nopng`; needs a build with PNG support)*
+- [x] Minimal Python `Worker` spawns server and sends commands *(uv-managed package `llnl-griz` at `pygriz/`, importable as `griz`; `Worker` waits for the `READY` sentinel, drains stdout/stderr in background threads, sends plain-text commands, and shuts down via `quit`. Verified by `pygriz/tests/test_worker.py` — 5 passing)*
+- [x] Clean shutdown with no resource leaks on the command-loop exit path *(was blocked by a `double free or corruption` abort in `outrgb`; root cause: `ImageLib` typedefs `SIGNED_4BYTE`/`UNSIGNED_4BYTE` as `long` on Linux, which expands to 8 bytes on 64-bit, and `cvtimage()` in `Src/ImageLib/open.c` used hard-coded `buffer+26` offsets that assumed 4-byte values. That write landed past the end of the `IMAGE` struct and corrupted the malloc heap, aborting in the next `free()`. Fixed in `Src/ImageLib/image.h` by pinning those typedefs to `int32_t`/`uint32_t` on `__linux`; batch + server both exit cleanly now.)*
+- [x] End-to-end smoke test passes for stdin command loop + state navigation + RGB screenshot; full image-format coverage gated on the two items above
+
+### Phase 2 — JSON protocol & output capture ([02](mcp/02-server-binary.md), [05](mcp/05-protocol.md), [08 §2.2](mcp/08-phasing.md))
+
+- [x] JSON request/response envelope (cJSON integration) *(cJSON 1.7.19 vendored at `Src/ext/cJSON/`; `server_core.{c,h}` wraps request parsing + response emission; `process_server_mode_stdio` accepts both raw lines and `{"type":"request",...}` and emits one response line per command, with populated `stdout`/`stderr` fields via the fd-level output capture below.)*
+- [x] Handshake sequence (`ready` → `hello` → `hello_ack`) *(startup emits `{"type":"event","event":"ready","version":"1.0",...}`; `server_try_hello` consumes inline `{"type":"hello",...}` frames and emits `hello_ack` with `compatible` flag. Hello is optional — non-hello lines fall through to request processing.)*
+- [x] `griz_out()` / `griz_err()` sink indirection implemented *(done via fd-level redirect: `server_capture_begin` / `server_capture_end` in `server_core.c` dup2 stdout/stderr to tmpfile()s around each parse_command, then drain them into the response's `stdout`/`stderr` fields. Capture is capped at 256 KB per stream with an `…[truncated]` sentinel. The fd-level approach subsumes a source-level `griz_out`/`griz_err` wrapper — every `printf`/`fprintf(stdout,…)`/`write(1,…)` routes through the redirect automatically.)*
+- [x] Audit & replace `printf` / `fprintf(stdout,…)` on batch paths *(subsumed by the fd-level capture above — no source-level audit required. Verified by `test_stdout_is_captured_into_response`: the `help` command's multi-line output lands in `response.stdout` instead of interleaving with the JSON stream.)*
+- [x] Structured error taxonomy with `code` field *(popup_dialog now calls `server_record_error` in GRIZ_SERVER_BUILD; the command loop translates captured diagnostics into `{"status":"error","error":{"code":...,"message":...}}`. Codes: `invalid_syntax` (USAGE_POPUP), `command_error` (WARNING_POPUP / generic), `unknown_command` (INFO_POPUP matching "not valid"). INFO_POPUP notices without error keywords do not raise.)*
+- [x] Query commands: `q_state`, `q_view`, `q_time` *(dispatched before parse_command in viewer.c's server loop; return `data` field with time_state / max_time_state / state_count / time_value / max_time_value / viewport / current_field. Camera/materials/colormap still TODO.)*
+- [x] Python worker parses JSON and translates errors to exceptions *(Worker uses a reader thread to route responses/events; `cmd(command)` sends a JSON request with an auto-generated id, blocks for the matching response, raises `GrizCommandError(code, message)` on status:error. `send_command(raw)` retained for fire-and-forget / crashy paths.)*
+- [x] Protocol edge cases covered by integration tests *(14 tests in `pygriz/tests/test_worker.py`: handshake populates server_info, cmd round-trip, raw+JSON envelope paths, malformed JSON → invalid_request, unknown command → unknown_command, q_state/q_view/q_time shapes, stdout-capture round-trip.)*
+
+### Phase 3 — Python API package ([03](mcp/03-python-api.md), [06](mcp/06-results-mapping.md), [08 §2.3](mcp/08-phasing.md))
+
+- [x] `Griz` class with context manager (`__enter__` / `__exit__`) *(in `pygriz/src/griz/session.py`; lazy worker spawn on first `open()`, `close()` / `__exit__` tear down; `reload()` closes + reopens; `worker_factory` kwarg lets tests inject a mock.)*
+- [x] `field` namespace (`show`, `list`, `info`) *(`field.show` resolves through `ResultsMap` and drives `show <griz-name>`. `field.list` / `field.info` issue `q_results` / `q_result_info` — both surface `GrizCommandError(code="unknown_command")` until server-side queries land, see Phase 4 gating below.)*
+- [x] `view` namespace (`rotate`, `translate`, `scale`, `zoom`, `reset`) *(wraps `rx`/`ry`/`rz`, `tx`/`ty`/`tz`, `scale`, and `rview`; `zoom` is an alias for `scale`.)*
+- [x] `time` namespace (`set_state`, `set_time`, `animate`) *(also `next` / `prev`; `animate()` walks the state range locally with an optional delay and returns per-frame state dicts, supports negative step.)*
+- [x] `materials` namespace (`hide`, `show`, `list`) *(uses `vis` / `invis` commands; `list` / `show_only` depend on `q_materials` — not yet implemented server-side, will raise until it lands.)*
+- [x] Top-level: `select`, `highlight`, `clear_picks`, `screenshot`, `state`, `raw` *(`select`/`hilite`/`clrhil` wrappers; `screenshot()` uses `outrgb` and returns path or bytes; `state()` calls `q_state`; `raw()` returns the full response dict and passes through the optional timeout.)*
+- [x] `Src/data/results_map.yaml` and YAML loader *(canonical YAML lives in `Src/data/`; `pygriz/src/griz/data/results_map.yaml` is a symlink so hatch ships the real file in the wheel. Loader lives in `griz/results_map.py` with `default_map()` as a lazy singleton; `GRIZ_RESULTS_MAP` env var overrides the bundled copy for testing.)*
+- [x] Unit tests with mocked worker (>90% coverage) *(non-worker coverage ≥93% per module: `__init__` 100%, `exceptions` 100%, `field` 100%, `view` 100%, `selection` 100%, `materials` 97%, `time_` 97%, `results_map` 94%, `session` 93%. 51 new unit tests in `tests/test_results_map.py` + `tests/test_session.py`; mock worker at `tests/mock_worker.py` is a no-subprocess stand-in used for behavioral coverage.)*
+- [x] `pyproject.toml` and pip-installable from `pygriz/` *(package name `llnl-griz`, imports as `griz`. `pyproject.toml` adds `pyyaml>=6.0` and a `test` extra with `pytest-cov`. `tool.hatch.build.targets.wheel.force-include` maps the symlinked YAML into the wheel. Note: lives at `pygriz/` rather than `Src/python/griz/` to keep Python out of the C autotools tree; promoting to `Src/python/griz/` is a Phase 5 packaging concern.)*
+
+Previously gated on Phase 2 server work: `q_results` and `q_materials` are now implemented. `field.list`, `materials.list`, and `materials.show_only` work end-to-end. `field.info` still depends on `q_result_info` (not yet implemented).
+
+### Phase 4 — MCP adapter ([04](mcp/04-mcp-adapter.md), [08 §2.4](mcp/08-phasing.md))
+
+- [x] `griz-mcp` MCP server bootstraps and registers tools *(FastMCP 3.x at `pygriz_mcp/`; `mcp = FastMCP("griz-mcp")` with 15 `@mcp.tool` functions in `server.py`; entry point `griz-mcp` via `[project.scripts]`; module-level session singleton in `session.py` with factory injection for tests. 38 tests.)*
+- [x] Database tools: `open_database`, `close_database`
+- [x] Field tools: `show_field`, `list_fields`
+- [x] View tools: `rotate_view`, `reset_view`
+- [x] Time tools: `set_time_state`, `animate`
+- [x] Material tools: `hide_materials`, `show_materials`, `list_materials`
+- [x] `screenshot` returns MCP `ImageContent` *(returns `fastmcp.utilities.types.Image(data=bytes, format="png")`; Python-side SGI→PNG conversion via `griz/_sgi.py`)*
+- [x] `get_state`, `restart_session`, `raw_command`
+- [x] End-to-end MCP client transcript in README *(initialize → tools/list → open_database → show_field → rotate + screenshot → animate → close; see `pygriz_mcp/README.md`)*
+- [x] Package publishable from `pygriz_mcp/` *(pip-installable via `uv sync`; lives at repo root parallel to `pygriz/` following the same convention — promotion to `Src/python/griz_mcp/` is a Phase 5 packaging concern)*
+
+### Phase 5 — Polish & production readiness ([08 §2.5](mcp/08-phasing.md))
+
+- [ ] Timeout & watchdog mechanisms
+- [ ] Session restart / recovery
+- [ ] Performance benchmarks meet targets (§6.1)
+- [ ] Stress tests run 24h+ without leaks
+- [ ] MCP prompt templates for common workflows
+- [ ] CI pipeline across supported Python versions
+- [ ] User guide and tutorial docs published
+
+### Shared with UI effort ([shared/](shared/))
+
+- [x] [shared/server-binary.md](shared/server-binary.md) — `griz-server` target & transports *(design complete; stdio transport implemented and working. RPC transport is a future UI concern.)*
+- [x] [shared/command-protocol.md](shared/command-protocol.md) — envelope & handshake *(design complete; envelope, handshake, and error taxonomy all implemented in Phase 2. Open questions on back-pressure and cancellation are deferred to later phases.)*
+- [x] [shared/output-capture.md](shared/output-capture.md) — `griz_out` / `griz_err` plumbing *(design complete; implementation uses fd-level `dup2` redirect rather than source-level sinks — functionally equivalent, doc update tracked in MVP polish above.)*
+- [x] [shared/query-commands.md](shared/query-commands.md) — `q_*` commands & state schema *(design complete; `q_state`/`q_view`/`q_time` implemented. Remaining commands `q_results`/`q_materials`/`q_selection`/`q_render`/`q_database` tracked in MVP polish above.)*
+- [x] [shared/results-map.md](shared/results-map.md) — `results_map.yaml` as single source of truth *(design complete; YAML file and Python loader implemented. Server-side generated header deferred until `q_results` lands.)*
+
+---
+
 ## 1. Goal
 
 Expose Griz's visualization capabilities from Python, so that:

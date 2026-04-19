@@ -1879,6 +1879,11 @@ extern void model_history_log_update( char *command, Analysis *analy );
 extern void model_history_log_comment(char *comment, Analysis *analy);
 extern void model_history_log_run( Analysis * analy );
 
+#ifdef GRIZ_SERVER_BUILD
+extern int process_server_mode_stdio( const char *db_path,
+                                      int width, int height );
+#endif
+
 extern char * griz_version;
 extern char * particle_cname;
 extern Database_type_griz db_type;

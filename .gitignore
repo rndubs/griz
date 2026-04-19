@@ -3,3 +3,19 @@ Src/GRIZ*/
 Src/*.log
 Src/test/scripts
 Src/autom4te.cache/
+
+.claude/
+
+# Python build / runtime artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# core dumps from native crashes (e.g. griz-server outrgb abort)
+*.core

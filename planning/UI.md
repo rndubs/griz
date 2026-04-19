@@ -1,5 +1,31 @@
 # Griz UI Modernization Plan
 
+## 0. MCP Implementation Progress Tracker
+
+**MCP (Model Context Protocol) Implementation** - Exposing Griz visualization capabilities to AI assistants and Python scripts
+
+**Status**: Planning Complete, Ready for Implementation
+
+| Phase | Component | Status | Location |
+|-------|-----------|--------|----------|
+| 1 | Architecture & Planning | ✅ Complete | [`mcp/01-architecture.md`](mcp/01-architecture.md) |
+| 1 | Server Binary Design | ✅ Complete | [`mcp/02-server-binary.md`](mcp/02-server-binary.md) |
+| 1 | Python API Design | ✅ Complete | [`mcp/03-python-api.md`](mcp/03-python-api.md) |
+| 1 | MCP Adapter Design | ✅ Complete | [`mcp/04-mcp-adapter.md`](mcp/04-mcp-adapter.md) |
+| 1 | Protocol Definition | ✅ Complete | [`mcp/05-protocol.md`](mcp/05-protocol.md) |
+| 1 | Results Mapping | ✅ Complete | [`mcp/06-results-mapping.md`](mcp/06-results-mapping.md) |
+| 1 | Testing Strategy | ✅ Complete | [`mcp/07-testing.md`](mcp/07-testing.md) |
+| 1 | Implementation Phases | ✅ Complete | [`mcp/08-phasing.md`](mcp/08-phasing.md) |
+| 2 | C Server Implementation | 🟡 Not Started | [`mcp/02-server-binary.md`](mcp/02-server-binary.md) |
+| 2 | JSON Protocol | 🟡 Not Started | [`mcp/05-protocol.md`](mcp/05-protocol.md) |
+| 3 | Python griz Package | 🟡 Not Started | [`mcp/03-python-api.md`](mcp/03-python-api.md) |
+| 4 | MCP Adapter Package | 🟡 Not Started | [`mcp/04-mcp-adapter.md`](mcp/04-mcp-adapter.md) |
+| 5 | Testing & Polish | 🟡 Not Started | [`mcp/07-testing.md`](mcp/07-testing.md) |
+
+**Next Action**: Begin Phase 2 implementation - Server binary and JSON protocol
+
+---
+
 ## 1. Goals
 
 - Replace the legacy Motif + X11 + GLw frontend with a modern, supported UI stack.

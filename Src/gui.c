@@ -9208,6 +9208,15 @@ popup_dialog( int dtype, ... )
          * If in SERIAL_BATCH mode then code should branch here.
          */
 
+#ifdef GRIZ_SERVER_BUILD
+        /* In server mode the command loop consults this slot after
+         * parse_command() to build a structured error response. */
+        {
+            extern void server_record_error( int, const char * );
+            server_record_error( dtype, dialog_msg );
+        }
+#endif
+
         fprintf( stderr, "%s\n", dialog_msg );
         return;
     }

@@ -28,6 +28,9 @@
 
 #include <stdlib.h>
 #include "viewer.h"
+#ifdef GRIZ_SERVER_BUILD
+#include "cJSON.h"
+#endif
 
 #define OK 0
 
@@ -4139,6 +4142,65 @@ is_nodal_result( Result_type result_id )
 }
 
 #endif
+
+
+#ifdef GRIZ_SERVER_BUILD
+/*****************************************************************
+ * TAG( server_build_results_data )
+ *
+ * Build a cJSON object with { results: [...], current: ... } from
+ * the primal and derived result hash tables.
+ */
+static void
+server_add_htable_results( void *arr_v, Hash_table *ht,
+                           const char *origin_label )
+{
+    cJSON *arr = (cJSON *) arr_v;
+    int bucket, i;
+    Htable_entry *p_hte;
+
+    if ( ht == NULL || ht->qty_entries == 0 )
+        return;
+
+    /* Walk all hash table buckets and entries.  The key is the result
+     * name string.  For primal results, data points to a Primal_result
+     * that has a long_name; for derived results, we use just the key. */
+    for ( bucket = 0; bucket < ht->size; bucket++ )
+    {
+        for ( p_hte = ht->table[bucket]; p_hte != NULL; p_hte = p_hte->next )
+        {
+            cJSON *entry;
+            const char *title = NULL;
+
+            if ( p_hte->key == NULL )
+                continue;
+
+            /* Try to get a descriptive title from the Primal_result. */
+            if ( p_hte->data != NULL )
+            {
+                Primal_result *pr = (Primal_result *) p_hte->data;
+                if ( pr->long_name != NULL && pr->long_name[0] != '\0' )
+                    title = pr->long_name;
+            }
+
+            entry = cJSON_CreateObject();
+            cJSON_AddStringToObject( entry, "name", p_hte->key );
+            cJSON_AddStringToObject( entry, "title",
+                                     title ? title : p_hte->key );
+            cJSON_AddStringToObject( entry, "origin", origin_label );
+            cJSON_AddItemToArray( arr, entry );
+        }
+    }
+}
+
+void *
+server_build_results_from_htable( void *arr_v, void *ht_v,
+                                  const char *origin_label )
+{
+    server_add_htable_results( arr_v, (Hash_table *) ht_v, origin_label );
+    return arr_v;
+}
+#endif /* GRIZ_SERVER_BUILD */
 
 
 /*****************************************************************
