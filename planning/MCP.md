@@ -1,5 +1,72 @@
 # Griz MCP Server — Design & Implementation Plan
 
+## Quick Start
+
+### 1. Build `griz-server`
+
+Requires an LLNL TOSS host with Mili (`/usr/apps/mdg`), OSMesa/X11/Motif,
+and a compiler module loaded (e.g. `intel-classic/2021.6.0-magic`).
+
+```bash
+# From the repo root — builds the headless griz-server binary
+./build.sh server
+```
+
+The binary lands at `Src/GRIZ4-*/bin_server_opt/griz-server`.
+The Python layer auto-discovers it from the repo build tree, so no
+`PATH` changes are needed when running from the repo.
+
+### 2. Install the Python packages
+
+```bash
+# Install the MCP server and its dependency (the griz Python API)
+cd pygriz_mcp
+uv sync --extra test
+```
+
+This installs both `llnl-griz-mcp` and `llnl-griz` (editable, from the
+sibling `pygriz/` directory).
+
+### 3. Run the MCP server
+
+```bash
+# stdio transport (default) — used by MCP clients
+uv run griz-mcp
+```
+
+### 4. Connect an MCP client
+
+Add the following to your MCP client configuration (e.g.
+`~/.claude/claude_desktop_config.json` for Claude Desktop, or
+`.claude/settings.json` → `mcpServers` for Claude Code):
+
+```json
+{
+  "mcpServers": {
+    "griz": {
+      "command": "uv",
+      "args": ["--directory", "/absolute/path/to/pygriz_mcp", "run", "griz-mcp"]
+    }
+  }
+}
+```
+
+Replace `/absolute/path/to/pygriz_mcp` with the actual path to the
+`pygriz_mcp/` directory in your checkout.
+
+### 5. Verify with the smoke tests
+
+```bash
+cd pygriz_mcp
+uv run pytest tests/test_smoke.py -v
+```
+
+These 14 tests exercise the full stack (MCP client → `griz-mcp` →
+`griz.Griz` → `Worker` → `griz-server`) against the `bar71.pltA`
+sample database. They skip automatically if the binary isn't built.
+
+---
+
 ## 0. Implementation Status
 
 Top-level progress tracker. Detailed design for each topic lives in
@@ -18,7 +85,7 @@ Must fix (users will hit these immediately):
 Should fix (rough edges that erode trust):
 
 - [x] **Clear error when `griz-server` not on PATH** — `_find_griz_server()` already checks `GRIZ_BIN`, `PATH`, and repo build dirs with a clear error message.
-- [ ] **End-to-end smoke test through the MCP protocol** — verify the full flow (MCP client → `griz-mcp` → `griz` → `griz-server`) with a real Mili database, not just unit tests with mocks.
+- [x] **End-to-end smoke test through the MCP protocol** — 14 tests in `pygriz_mcp/tests/test_smoke.py` exercise the full stack (FastMCP Client → `griz-mcp` tools → `griz.Griz` → `Worker` → `griz-server`) against the real `bar71.pltA` database. Covers: open/close, list/show fields, time navigation, view rotation/reset, materials hide/show/list, screenshot (PNG), animate, raw command, restart, and a full realistic workflow. Skips gracefully if binary or database is missing.
 - [x] **MCP tool descriptions tuned for LLM consumption** — all 15 tool docstrings updated with field/component names, state explanations, axis directions, and cross-references. Added `list_materials` tool.
 - [x] **Update `shared/output-capture.md`** — updated to describe the fd-level `dup2` capture that shipped, replacing the originally planned `griz_out()`/`griz_err()` source-level approach.
 
