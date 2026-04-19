@@ -13,11 +13,11 @@ Must fix (users will hit these immediately):
 - [ ] **Implement `q_results` server-side** — `list_fields` MCP tool and `field.list()` / `field.info()` all error with `unknown_command` today. A user asking "what fields are available?" gets a crash instead of an answer.
 - [ ] **Implement `q_materials` server-side** — `materials.list()` errors the same way. Users can `hide`/`show` by id but can't discover what materials exist.
 - [ ] **Screenshot format usable by MCP clients** — `outrgb` produces SGI RGB files; most MCP clients (Claude Desktop, etc.) can't display that. Either enable PNG in the build (`--enable-nopng` removed) or add Python-side conversion (PIL/`rgb→png`). Without this, `screenshot` is effectively broken for MCP users.
-- [ ] **Basic worker command timeout** — if `griz-server` hangs (bad DB, GL stall), the Python side blocks forever with no recovery. Add a default timeout (e.g. 30s) to `Worker.cmd()` with a clear `TimeoutError`.
+- [x] **Basic worker command timeout** — `Worker.cmd()` already has a 30s default timeout (per-call configurable via `timeout=` kwarg). Raises `WorkerError` on timeout.
 
 Should fix (rough edges that erode trust):
 
-- [ ] **Clear error when `griz-server` not on PATH** — today this surfaces as a cryptic `FileNotFoundError` from `subprocess.Popen`. Catch it and tell the user what to do.
+- [x] **Clear error when `griz-server` not on PATH** — `_find_griz_server()` already checks `GRIZ_BIN`, `PATH`, and repo build dirs with a clear error message.
 - [ ] **End-to-end smoke test through the MCP protocol** — verify the full flow (MCP client → `griz-mcp` → `griz` → `griz-server`) with a real Mili database, not just unit tests with mocks.
 - [ ] **MCP tool descriptions tuned for LLM consumption** — tool docstrings should list available field names, explain what a "state" is, etc. so the LLM can use the tools without guessing.
 - [ ] **Update `shared/output-capture.md`** — the doc describes source-level `griz_out()`/`griz_err()` sinks but the implementation uses fd-level `dup2` redirect. Align the doc to what shipped.

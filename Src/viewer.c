@@ -3016,6 +3016,65 @@ build_q_state_data( Analysis *analy )
     return data;
 }
 
+static cJSON *
+build_q_materials_data( Analysis *analy )
+{
+    cJSON *data       = cJSON_CreateObject();
+    cJSON *mat_array  = cJSON_CreateArray();
+    int    mat_qty    = MESH_P( analy )->material_qty;
+    unsigned char *hide    = MESH_P( analy )->hide_material;
+    unsigned char *disable = MESH_P( analy )->disable_material;
+    int i;
+
+    cJSON_AddNumberToObject( data, "total", mat_qty );
+
+    for ( i = 0; i < mat_qty; i++ )
+    {
+        cJSON *mat = cJSON_CreateObject();
+        /* User-facing material IDs are 1-based. */
+        cJSON_AddNumberToObject( mat, "id", i + 1 );
+        cJSON_AddBoolToObject(   mat, "visible",
+                                 hide    == NULL || hide[i]    == 0 );
+        cJSON_AddBoolToObject(   mat, "enabled",
+                                 disable == NULL || disable[i] == 0 );
+        cJSON_AddItemToArray( mat_array, mat );
+    }
+
+    cJSON_AddItemToObject( data, "materials", mat_array );
+    return data;
+}
+
+static cJSON *
+build_q_results_data( Analysis *analy )
+{
+    cJSON *data = cJSON_CreateObject();
+    cJSON *results_array = cJSON_CreateArray();
+
+    /* Iterate the primal and derived result hash tables.
+     * The helper in results.c appends {name, title, origin} objects. */
+    server_build_results_from_htable(
+        results_array, analy->primal_results, "primal" );
+    server_build_results_from_htable(
+        results_array, analy->derived_results, "derived" );
+
+    cJSON_AddItemToObject( data, "results", results_array );
+
+    /* Current result, if any. */
+    if ( analy->cur_result != NULL && analy->cur_result->name[0] != '\0' )
+    {
+        cJSON *current = cJSON_CreateObject();
+        cJSON_AddStringToObject( current, "name",  analy->cur_result->name );
+        cJSON_AddStringToObject( current, "title", analy->cur_result->title );
+        cJSON_AddItemToObject( data, "current", current );
+    }
+    else
+    {
+        cJSON_AddNullToObject( data, "current" );
+    }
+
+    return data;
+}
+
 /* If `cmd` is a recognised query command, emit a response with a
  * populated `data` field and return 1. Otherwise return 0 and leave
  * the caller to dispatch through parse_command(). */
@@ -3038,6 +3097,14 @@ server_try_query( const char *id, const char *cmd, Analysis *analy )
     else if ( strcmp( c, "q_time" ) == 0 )
     {
         data = build_q_time_data( analy );
+    }
+    else if ( strcmp( c, "q_materials" ) == 0 )
+    {
+        data = build_q_materials_data( analy );
+    }
+    else if ( strcmp( c, "q_results" ) == 0 )
+    {
+        data = build_q_results_data( analy );
     }
     else
     {

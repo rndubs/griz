@@ -158,6 +158,14 @@ int  server_peek_error( const char **code, const char **message );
  */
 int server_try_hello( const char *line );
 
+/* Iterate a result hash table (primal_results or derived_results) and
+ * append {name, title, origin} cJSON objects to the array `arr`.
+ * All pointers are void* to avoid pulling in cJSON.h / viewer.h from
+ * callers. `ht` is a Hash_table*, `arr` is a cJSON array.
+ * Returns `arr` for chaining. Defined in results.c. */
+void *server_build_results_from_htable( void *arr, void *ht,
+                                        const char *origin_label );
+
 #endif /* GRIZ_SERVER_BUILD */
 
 #endif /* SERVER_CORE_H */
