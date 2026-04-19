@@ -58,6 +58,17 @@ The 4-byte length prefix matches common framing in gRPC length-prefixed messages
 
 **Why not gRPC / protobuf.** Two reasons the original UI.md §3.3 planned to "decide in prototype" and we now lean against: (a) gRPC's HTTP/2 stack does not play well with some HPC SSH configurations and site audit processes, and (b) the MCP effort has proven that the JSON envelope is expressive enough for every command-surface need and is trivial to mirror in two languages. Keeping RPC JSON-shaped preserves the "one envelope, two transports" invariant. A hand-framed transport wrapping the same JSON is a shorter implementation path and a shorter review.
 
+### 2.5 Decision: hand-framed JSON for v1
+
+The transport shape described in §2.2–§2.4 is the v1 commitment, not a prototype choice. No gRPC revisit is on the v1 roadmap. Resolved 2026-04-19.
+
+**Future revisit triggers** (post-v1; do not block v1 work):
+
+- **Streaming RPC need.** If pick replies, frames, or a future streaming-result command class grow ordering or back-pressure semantics that the §4 rules cannot express cleanly. Current evidence (§4.1) is that frames are explicitly out-of-band and command FIFO is sufficient — no streaming abstraction needed.
+- **Second consumer.** If a non-Qt client (e.g. a web UI, a third-party visualization shell) appears and needs the same surface. Mitigation already in place: the JSON envelope is identical across stdio/RPC/MCP, so a thin websocket bridge in Python or Go reaches a browser without rewriting the server.
+
+If neither trigger fires, hand-framed JSON stays. The cost of revisiting later is bounded because the envelope itself is portable.
+
 ### 2.3 Authentication
 
 The rendezvous file ([01-architecture](01-architecture.md) §3) carries a 32-byte base64 token. First frame sent by the client after TCP connect must be a JSON envelope of kind `hello` with an added `token` field:
@@ -104,6 +115,8 @@ JSON header carries context the consumer needs without decoding the body (e.g. f
 
 Every binary frame is correlated either to a request id (screenshot, pick reply) or to a server-side sequence counter (rendered frames). See [05-rendering-and-streaming](05-rendering-and-streaming.md) for frame-sequence semantics and [06-picking-and-queries](06-picking-and-queries.md) for pick semantics.
 
+**Size-cap enforcement.** Bodies exceeding the §2.2 16 MiB cap MUST be split across continuation frames; no subtype is exempt. The writer chunks the body, sets `flags bit0 = continuation` on all but the final chunk, and sets `flags bit2 = last` on the final chunk. The reader reassembles by `(subtype, request_id)` (or `(subtype, frame_seq)` for rendered frames). Lossless screenshots of large viewports are the motivating case: an 8K RGBA capture is ~256 MiB and streams as ~16 chunks. Keeping the cap uniform avoids leaking subtype-specific allocation policy into the framing layer.
+
 ## 4. Flow control and ordering
 
 ### 4.1 Ordering guarantees
@@ -126,6 +139,8 @@ Three TCP-level queues and one application queue matter:
 
 The server signals "I dropped frames" by including a monotonic `frame_seq` on every rendered frame; a gap tells the client it missed frames. The client does not ask for retransmission — frames are ephemeral.
 
+**Future consideration (post-v1, evidence-gated):** TCP-over-SSH can stall on packet loss over a WAN, which the latest-wins drop policy mitigates but does not eliminate during continuous interaction. A separately-authenticated UDP channel for frames (commands staying on TCP) is a known mitigation, but adds a second socket, a second auth handshake, and would not traverse the `ssh -L` tunnel mandated in §2.1 — `ssh -w` or direct routing is a site-policy minefield. Defer until WAN-from-home measurements show >30% frame stalls during interaction; revisit then.
+
 ### 4.3 Cancellation (deferred)
 
 Long-running commands (`anim`, state sweeps, full-mesh `outrgb`) cannot be interrupted today. The open question in [`../shared/command-protocol.md`](../shared/command-protocol.md) — a `{"type":"cancel", "id":"<outstanding-id>"}` request — stays open here and is deferred past v1.
@@ -147,6 +162,15 @@ Per [`../shared/command-protocol.md`](../shared/command-protocol.md) § Error ta
 
 Partial results: not supported. A command either succeeds with its full `data` payload, or errors. Server-side streaming-result commands (none today; potentially future `animate` with per-state progress) would need a new message type and a protocol-version bump.
 
+### 6.1 Binary payload policy
+
+Two transports, two policies. Resolved 2026-04-19.
+
+- **RPC.** Binary frames per §3 are mandatory. No base64-in-JSON fallback. The Qt client is the only v1 RPC consumer and is being built alongside the protocol; a JSON-only RPC variant would double the screenshot-emission path for a hypothetical client that does not exist. If a third-party JSON-only RPC client ever appears, the §2.5 second-consumer mitigation (websocket bridge) reaches it without changing the wire format.
+- **MCP stdio.** Screenshots remain disk-path returns: the `screenshot` tool writes to a file and returns the path. No base64 inlining. Rationale: most MCP hosts cap or truncate multi-megabyte tool responses; base64 inflates ~33%; disk-path lets the agent defer reading the image until it actually needs to look at it. This matches the pattern of other MCP image tools and is what the current MVP already does.
+
+If a vision-enabled MCP host later wants inline images in the same turn, base64-in-JSON can be added then as an opt-in tool variant. The disk-path default does not preclude it.
+
 ## 7. Prototype plan
 
 Land RPC as a strict lift of the stdio path. Concrete steps once [03-server](03-server.md) decomposition ships:
@@ -160,7 +184,4 @@ Land RPC as a strict lift of the stdio path. Concrete steps once [03-server](03-
 
 ## Open questions
 
-- **gRPC revisit?** Choice is tentatively "hand-framed JSON." Revisit if (a) pick replies + frames prove to want a real streaming RPC abstraction, or (b) a second consumer (e.g. a web client) appears.
-- **UDP path for frames on high-latency WAN?** Image streaming over TCP over SSH is known to stall on packet loss. A v2 option of a separately-authenticated UDP channel for frames (commands stay on TCP) is worth exploring after WAN latency measurements in Phase 0.
-- **Size cap tuning.** 16 MiB per frame is generous for a 4K JPEG but tight for lossless screenshots of large viewports. Either raise the cap for the screenshot subtype only, or force screenshot bodies to split into continuation frames.
-- **Binary-in-JSON fallback.** MCP stdio clients today cannot receive binary frames inline. When the `screenshot` command becomes a first-class response (not a disk write), stdio needs a base64 path. A mirror question exists for RPC clients that prefer JSON-only.
+*(All protocol-level open questions resolved as of 2026-04-19; resolutions are captured in §2.5, §3 (size-cap enforcement), §4.2 (WAN UDP future consideration), and §6.1 above.)*
