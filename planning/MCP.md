@@ -54,16 +54,16 @@ Gated on Phase 2 server work (tracked under shared/query-commands.md): `field.li
 
 ### Phase 4 — MCP adapter ([04](mcp/04-mcp-adapter.md), [08 §2.4](mcp/08-phasing.md))
 
-- [ ] `griz-mcp` MCP server bootstraps and registers tools
-- [ ] Database tools: `open_database`, `close_database`
-- [ ] Field tools: `show_field`, `list_fields`
-- [ ] View tools: `rotate_view`, `reset_view`
-- [ ] Time tools: `set_time_state`, `animate`
-- [ ] Material tools: `hide_materials`, `show_materials`
-- [ ] `screenshot` returns MCP `ImageContent`
-- [ ] `get_state`, `restart_session`, `raw_command`
-- [ ] End-to-end MCP client transcript in README
-- [ ] Package publishable from `Src/python/griz_mcp/`
+- [x] `griz-mcp` MCP server bootstraps and registers tools *(FastMCP 3.x at `pygriz_mcp/`; `mcp = FastMCP("griz-mcp")` with 14 `@mcp.tool` functions in `server.py`; entry point `griz-mcp` via `[project.scripts]`; module-level session singleton in `session.py` with factory injection for tests. 36 tests, 91% coverage.)*
+- [x] Database tools: `open_database`, `close_database`
+- [x] Field tools: `show_field`, `list_fields`
+- [x] View tools: `rotate_view`, `reset_view`
+- [x] Time tools: `set_time_state`, `animate`
+- [x] Material tools: `hide_materials`, `show_materials`
+- [x] `screenshot` returns MCP `ImageContent` *(returns `fastmcp.utilities.types.Image(data=bytes, format="rgb")`; format is SGI RGB since default build uses `--enable-nopng`)*
+- [x] `get_state`, `restart_session`, `raw_command`
+- [x] End-to-end MCP client transcript in README *(initialize → tools/list → open_database → show_field → rotate + screenshot → animate → close; see `pygriz_mcp/README.md`)*
+- [x] Package publishable from `pygriz_mcp/` *(pip-installable via `uv sync`; lives at repo root parallel to `pygriz/` following the same convention — promotion to `Src/python/griz_mcp/` is a Phase 5 packaging concern)*
 
 ### Phase 5 — Polish & production readiness ([08 §2.5](mcp/08-phasing.md))
 

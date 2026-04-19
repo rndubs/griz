@@ -36,6 +36,8 @@ If `configure.ac` changes, run `autoconf -f` in `Src/` before `build.sh`.
 Any python work should use `uv` from Astral.
 Call `uv --help` to access the full list of `uv` sub-commands when needed.
 
+If you run into certs issues, read the CERTS.md file for context.
+
 ## Session Summaries
 
 Do not write NEW Markdown files at the end of a session unless asked.
