@@ -785,7 +785,9 @@ generate_banned_names_list( Analysis * analy )
 {
     int i;
     int qty_banned_names;
-    int qty_classes;
+    /* mili_get_class_names() accumulates into *qty_classes rather than
+     * assigning (io_wrappers.c), so it must start at 0. */
+    int qty_classes = 0;
     char *class_names[2000];
     int  superclasses[2000];
 

@@ -20,7 +20,6 @@
 #include "server_core_startup.h"
 
 extern Bool_type serial_batch_mode;
-extern void *offscreen;
 extern Session *session;
 extern Analysis *analy_ptr;
 extern Environ env;
@@ -94,7 +93,9 @@ server_core_startup( Analysis **out_analy,
     env.curr_analy = analy;
     init_plot_colors();
 
-    rc = OffscreenContext( offscreen,
+    /* OffscreenContext() allocates its own RGBA buffer and never writes
+     * back through the first argument; passing NULL is intentional. */
+    rc = OffscreenContext( NULL,
                            get_window_width(),
                            get_window_height(), 0 );
     if ( rc < 0 )
