@@ -11,6 +11,7 @@ from griz.field import FieldAPI
 from griz.materials import MaterialsAPI
 from griz.results_map import ResultsMap, default_map
 from griz.selection import SelectionAPI
+from griz.rpc_worker import RpcWorker
 from griz.session import Griz
 from griz.time_ import TimeAPI
 from griz.view import ViewAPI
@@ -27,6 +28,7 @@ __all__ = [
     "MaterialsAPI",
     "RenderingError",
     "ResultsMap",
+    "RpcWorker",
     "SelectionAPI",
     "TimeAPI",
     "UnknownFieldError",
