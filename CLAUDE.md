@@ -67,17 +67,17 @@ Run `./build.sh` from the repo root to configure and build. Target
 selection: `./build.sh batch` builds only `batchopt`, `./build.sh server`
 builds only `serveropt`, and `./build.sh` (or `all`) builds both. Pass
 alternate configure flags after a `--` separator (e.g.
-`./build.sh server -- --with-mili=/some/path`); default configure args
-are `--enable-nojpeg --enable-nopng`.
+`./build.sh server -- --with-mili=/some/path`). No configure flags are
+passed by default — libjpeg and libpng are auto-detected, so `outpng`,
+`outjpeg`, and the RPC inline-screenshot binary frame (`kind=0x02`
+subtype `0x02` codec `0x02`) all work out of the box on TOSS. On hosts
+that lack libjpeg/libpng, pass `--enable-nojpeg --enable-nopng` after
+`--` to compile them out (the inline-screenshot endpoint will fail at
+runtime in that configuration).
 
 Output binaries:
 - `Src/GRIZ4-*/bin_batch_opt/griz4s.linux_opt_batch`
 - `Src/GRIZ4-*/bin_server_opt/griz-server`
-
-The default `--enable-nojpeg --enable-nopng` flags compile out the
-`outpng` and `outjpeg` commands — they return "Command not valid" at
-runtime. To smoke-test image output, rebuild with those flags removed
-(e.g. `./build.sh server --`).
 
 Prereqs on LLNL TOSS: Mili at `/usr/apps/mdg`, system OSMesa/X11/Motif in
 `/usr/lib64` + `/usr/include/GL`, an Intel or GCC compiler module loaded

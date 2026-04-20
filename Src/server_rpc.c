@@ -289,6 +289,19 @@ rpc_line_emitter( const char *buf, size_t len, void *ctx )
     (void) rpc_write_frame( c->fd, RPC_FRAME_KIND_JSON, buf, len );
 }
 
+/* Binary-frame emitter for the RPC transport. `payload` already carries
+ * the subtype/codec/flags control bytes + uint16-length JSON header +
+ * body — see server_emit_binary_frame() in server_core.c. We just
+ * length-prefix it as a kind=0x02 frame on the wire. */
+static void
+rpc_binary_emitter( const unsigned char *payload, size_t len, void *ctx )
+{
+    RpcContext *c = (RpcContext *) ctx;
+    if ( c == NULL || c->fd < 0 )
+        return;
+    (void) rpc_write_frame( c->fd, RPC_FRAME_KIND_BINARY, payload, len );
+}
+
 /* --- Rendezvous + token ------------------------------------------- */
 
 static int
@@ -713,8 +726,9 @@ process_server_mode_rpc( const char *db_path,
     g_rpc.last_inbound_ms  = rpc_now_ms();
     g_rpc.last_outbound_ms = g_rpc.last_inbound_ms;
 
-    /* Install the framed emitter for all subsequent JSON output. */
-    server_set_line_emitter( rpc_line_emitter, &g_rpc );
+    /* Install the framed emitters for all subsequent output. */
+    server_set_line_emitter(   rpc_line_emitter,   &g_rpc );
+    server_set_binary_emitter( rpc_binary_emitter, &g_rpc );
 
     /* --- Handshake (token auth). ---
      * The client must send hello within RPC_PEER_IDLE_TIMEOUT_MS of
@@ -894,9 +908,10 @@ cleanup:
     g_rpc.fd = -1;
     unlink( rv_path );
 
-    /* Restore default emitter in case anything later in the process
+    /* Restore default emitters in case anything later in the process
      * still wants to print through stdout. */
-    server_set_line_emitter( NULL, NULL );
+    server_set_line_emitter(   NULL, NULL );
+    server_set_binary_emitter( NULL, NULL );
     return return_code;
 }
 

@@ -80,6 +80,11 @@ class RpcWorker:
 
         self._cond = threading.Condition()
         self._responses_by_id: dict[str, dict] = {}
+        # kind=0x02 bodies keyed by request_id in their sub-header.
+        # Bodies without a request_id (render-stream frames) land in
+        # _anon_binaries for callers that only care about the latest.
+        self._binaries_by_id: dict[str, dict] = {}
+        self._anon_binaries: deque[dict] = deque(maxlen=log_buffer)
         self._anon_responses: deque[dict] = deque(maxlen=log_buffer)
         self._events: list[dict] = []
         self._reader_alive = False
@@ -240,9 +245,12 @@ class RpcWorker:
                     except WorkerError:
                         return
                     continue
+                if kind == FRAME_KIND_BINARY:
+                    frame = _parse_binary_frame(payload)
+                    if frame is not None:
+                        self._route_binary(frame)
+                    continue
                 if kind != FRAME_KIND_JSON:
-                    # 0x02 binary frames (render/screenshot) aren't
-                    # consumed yet — discard. Phase 3 will route them.
                     continue
 
                 try:
@@ -270,6 +278,15 @@ class RpcWorker:
             else:
                 # Errors without a matching id fall through to anon.
                 self._anon_responses.append(obj)
+            self._cond.notify_all()
+
+    def _route_binary(self, frame: dict) -> None:
+        with self._cond:
+            rid = frame.get("header", {}).get("request_id")
+            if isinstance(rid, str):
+                self._binaries_by_id[rid] = frame
+            else:
+                self._anon_binaries.append(frame)
             self._cond.notify_all()
 
     # ------------------------------------------------------------------ #
@@ -381,6 +398,82 @@ class RpcWorker:
             )
         return response
 
+    def screenshot(
+        self,
+        *,
+        alpha: bool = False,
+        timeout: float = 30.0,
+    ) -> dict:
+        """Capture the current view as an inline PNG binary frame.
+
+        Sends a `screenshot` request, waits for the paired response and
+        the correlated `kind=0x02` binary frame, and returns a dict:
+
+            {
+                "seq": int,
+                "w": int,
+                "h": int,
+                "fmt": "png",
+                "bytes": bytes,      # raw PNG bytes
+                "header": {...},     # JSON sub-header from the binary frame
+            }
+
+        Raises WorkerError if the binary frame never arrives (e.g. the
+        server rejected the command and emitted only an error response).
+        """
+        request_id = f"req_{next(self._id_counter)}"
+        payload: dict = {"type": "request", "id": request_id, "cmd": "screenshot"}
+        if alpha:
+            payload["alpha"] = True
+        self._send_json(payload)
+
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while True:
+                if request_id in self._responses_by_id:
+                    response = self._responses_by_id.pop(request_id)
+                    break
+                if not self._reader_alive:
+                    raise WorkerError(
+                        f"griz-server closed socket before response to "
+                        f"{request_id!r}; stderr tail: {self._stderr_tail()}"
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise WorkerError(
+                        f"screenshot timed out after {timeout}s"
+                    )
+                self._cond.wait(timeout=remaining)
+
+            if response.get("status") == "error":
+                # Discard any stray binary buffered for this id — the
+                # server only emits one on the success path.
+                self._binaries_by_id.pop(request_id, None)
+                err = response.get("error") or {}
+                raise GrizCommandError(
+                    err.get("code") or "internal_error",
+                    err.get("message") or "",
+                    response=response,
+                )
+
+            frame = self._binaries_by_id.pop(request_id, None)
+
+        if frame is None:
+            raise WorkerError(
+                f"screenshot response arrived without a binary frame "
+                f"for {request_id!r}; stderr tail: {self._stderr_tail()}"
+            )
+
+        data = response.get("data") or {}
+        return {
+            "seq":    int(data.get("seq", frame["header"].get("seq", 0))),
+            "w":      int(data.get("w",   frame["header"].get("w",   0))),
+            "h":      int(data.get("h",   frame["header"].get("h",   0))),
+            "fmt":    data.get("fmt") or frame["header"].get("fmt", "png"),
+            "bytes":  frame["body"],
+            "header": frame["header"],
+        }
+
     def send_command(self, command: str) -> None:
         """Fire-and-forget raw command — posts via the JSON envelope.
 
@@ -483,6 +576,40 @@ class RpcWorker:
             self.cleanup()
         except Exception:
             pass
+
+
+def _parse_binary_frame(payload: bytes) -> dict | None:
+    """Decode a kind=0x02 payload per 02-protocol.md §3.
+
+    Returns a dict with `subtype`, `codec`, `flags`, `header` (parsed
+    JSON sub-header or {}), and `body` (raw bytes). Returns None on
+    malformed input so the reader loop can drop the frame.
+    """
+    if len(payload) < 6:
+        return None
+    subtype = payload[0]
+    codec   = payload[1]
+    flags   = payload[2]
+    # payload[3] reserved
+    hdr_len = (payload[4] << 8) | payload[5]
+    if 6 + hdr_len > len(payload):
+        return None
+    header: dict = {}
+    if hdr_len > 0:
+        try:
+            decoded = json.loads(payload[6:6 + hdr_len].decode("utf-8"))
+            if isinstance(decoded, dict):
+                header = decoded
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            header = {}
+    body = bytes(payload[6 + hdr_len:])
+    return {
+        "subtype": subtype,
+        "codec":   codec,
+        "flags":   flags,
+        "header":  header,
+        "body":    body,
+    }
 
 
 def _find_griz_server() -> str:

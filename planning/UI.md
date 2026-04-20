@@ -31,12 +31,18 @@ New server flags (see `Src/server_main.c`): `--bind=HOST`, `--port=N`, `--rendez
 ### Phase 3 — Rendering & frame push
 Source: [05-rendering-and-streaming.md](ui-design/05-rendering-and-streaming.md) MVP scope (§§3, 4.1, 5.3, 6, 7.1). LOD, H.264/AV1, MP4 animation export, `q_stats`, and EGL-surfaceless are post-MVP.
 
-- ⬜ Render-thread capture hook: `update_display` → `glFinish` → `glReadPixels` from OSMesa.
+- 🟡 Render-thread capture hook: `update_display` → `glFinish` → `glReadPixels` from OSMesa. *(Synchronous helper lives in `Src/server_render.c` — `server_render_capture_rgba()` — and backs the inline screenshot path. Command/render/I-O thread split and the post-command auto-push are still ⬜.)*
 - ⬜ In-process JPEG encoder (libjpeg-turbo); emit as `kind=0x02` subtype `0x01` codec `0x01` with subtype JSON header (`w, h, seq, rendered_at, encode_ms, quality`).
 - ⬜ 30 Hz render-trigger cap; server-side coalesce of drag commands before enqueue.
-- ⬜ Render → I/O single-slot latest-wins mailbox; monotonic `frame_seq` so the client infers drops from gaps.
+- ⬜ Render → I/O single-slot latest-wins mailbox; monotonic `frame_seq` so the client infers drops from gaps. *(Monotonic counter shipped via `server_render_next_frame_seq()`; mailbox depends on the thread split.)*
 - ⬜ Viewport resize: `server_viewport_resize(w, h)` re-creates the OSMesa context; reject >4096² with typed `resource_limit` error.
-- ⬜ Inline PNG screenshot path (`kind=0x02` subtype `0x02` codec `0x02`) with continuation-frame chunking for >16 MiB bodies — [02-protocol.md §3](ui-design/02-protocol.md).
+- ✅ Inline PNG screenshot path (`kind=0x02` subtype `0x02` codec `0x02`). `screenshot` command in `Src/server_core.c` (dispatcher) + `Src/server_render.c` (libpng in-memory encoder) emits the binary frame and a paired JSON response; the Python `RpcWorker.screenshot()` method correlates the two by `request_id`. Covered by `pygriz/tests/test_rpc_screenshot.py`. Continuation-frame chunking for >16 MiB bodies is still ⬜.
+
+New infrastructure landed alongside the screenshot path:
+
+- `server_set_binary_emitter()` / `server_emit_binary_frame()` in `Src/server_core.{c,h}` are the transport-neutral binary-frame hook — RPC installs a `kind=0x02` framer, stdio keeps a no-op default so `screenshot` surfaces a typed `unsupported_command` error there.
+- `Src/server_render.{c,h}` is the new TU for render + codec work (added to `SERVER_OBJS`). JPEG encoder and viewport-resize helpers will live here.
+- `./build.sh` no longer defaults to `--enable-nojpeg --enable-nopng`; libpng/libjpeg auto-detect on TOSS, so `outpng` / `outjpeg` (and the binary-frame encoder) are live by default.
 
 ### Phase 4 — Picking & element queries
 Source: [06-picking-and-queries.md §10 MVP path](ui-design/06-picking-and-queries.md). Box select, ray pick, hover probe, ID-buffer cache, and multi-select derivations are post-MVP.

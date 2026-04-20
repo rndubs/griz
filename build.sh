@@ -9,8 +9,12 @@
 #   ./build.sh [batch|server|all] \
 #              -- [configure-args...]   # override configure flags
 #
-# Configure defaults to --enable-nojpeg --enable-nopng if no args given
-# after `--`.
+# Configure defaults to an empty argument list — libjpeg and libpng are
+# auto-detected on modern TOSS hosts, so both `outjpeg`/`outpng` and the
+# griz-server binary frame encoder end up enabled. Pass
+# `./build.sh ... -- --enable-nojpeg --enable-nopng` on a host that
+# lacks libjpeg/libpng to compile them out (batch path still links, but
+# the inline-screenshot RPC endpoint will fail on kind=0x02 emission).
 #
 # Output binaries:
 #   Src/GRIZ4-*/bin_batch_opt/griz4s.linux_opt_batch   (batch)
@@ -35,9 +39,6 @@ if [ $# -gt 0 ] && [ "$1" = "--" ]; then
 fi
 
 CONFIG_ARGS=("$@")
-if [ ${#CONFIG_ARGS[@]} -eq 0 ]; then
-    CONFIG_ARGS=(--enable-nojpeg --enable-nopng)
-fi
 
 ./configure "${CONFIG_ARGS[@]}"
 

@@ -193,6 +193,7 @@ do_check() {
         server_events.c
         server_main.c
         server_rpc.c
+        server_render.c
     )
 
     local failed=0

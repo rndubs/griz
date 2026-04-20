@@ -19,6 +19,7 @@
 #include "server_core.h"
 #include "server_events.h"
 #include "server_query.h"
+#include "server_render.h"
 
 #define GRIZ_PROTOCOL_VERSION "1.0"
 #define GRIZ_SERVER_MAX_LINE 4096
@@ -52,6 +53,25 @@ stdout_line_emitter( const char *buf, size_t len, void *ctx )
 static ServerLineEmitter g_line_emitter     = stdout_line_emitter;
 static void              *g_line_emitter_ctx = NULL;
 
+/* Default binary-frame emitter: discard. The stdio transport does not
+ * carry binary frames (02-protocol.md §6.1 — MCP stdio returns
+ * screenshots as disk paths), and leaving a no-op default keeps callers
+ * from having to special-case transport detection. */
+static void
+noop_binary_emitter( const unsigned char *payload, size_t len, void *ctx )
+{
+    (void) payload;
+    (void) len;
+    (void) ctx;
+}
+
+static ServerBinaryEmitter g_binary_emitter     = noop_binary_emitter;
+static void               *g_binary_emitter_ctx = NULL;
+/* 16 MiB frame cap (02-protocol.md §2.2). Defined separately here so
+ * server_emit_binary_frame() can refuse oversized payloads before the
+ * transport ever sees them. */
+#define SERVER_BINARY_FRAME_MAX_PAYLOAD (16 * 1024 * 1024)
+
 void
 server_set_line_emitter( ServerLineEmitter fn, void *ctx )
 {
@@ -81,6 +101,82 @@ server_emit_raw( const char *json_text )
     if ( json_text == NULL )
         return;
     g_line_emitter( json_text, strlen( json_text ), g_line_emitter_ctx );
+}
+
+void
+server_set_binary_emitter( ServerBinaryEmitter fn, void *ctx )
+{
+    if ( fn == NULL )
+    {
+        g_binary_emitter     = noop_binary_emitter;
+        g_binary_emitter_ctx = NULL;
+    }
+    else
+    {
+        g_binary_emitter     = fn;
+        g_binary_emitter_ctx = ctx;
+    }
+}
+
+int
+server_has_binary_transport( void )
+{
+    return g_binary_emitter != noop_binary_emitter;
+}
+
+int
+server_emit_binary_frame( unsigned char       subtype,
+                          unsigned char       codec,
+                          unsigned char       flags,
+                          const char         *header_json,
+                          const unsigned char *body,
+                          size_t              body_len )
+{
+    size_t         hdr_len;
+    size_t         payload_len;
+    unsigned char *payload;
+    unsigned char *wp;
+
+    if ( g_binary_emitter == noop_binary_emitter )
+        return -1;   /* transport does not carry binary frames */
+
+    hdr_len = ( header_json != NULL ) ? strlen( header_json ) : 0;
+    /* JSON sub-header length field is uint16: cap matches the
+     * protocol (2-byte field precedes the JSON text, per §3). */
+    if ( hdr_len > 0xFFFFu )
+        return -1;
+
+    /* 4 bytes control (subtype/codec/flags/reserved) + 2 bytes jhlen
+     * + JSON header + body. Check against the transport cap before
+     * allocating. */
+    if ( body_len + hdr_len + 6 > SERVER_BINARY_FRAME_MAX_PAYLOAD )
+        return -1;
+
+    payload_len = 4 + 2 + hdr_len + body_len;
+    payload     = (unsigned char *) malloc( payload_len );
+    if ( payload == NULL )
+        return -1;
+
+    wp = payload;
+    *wp++ = subtype;
+    *wp++ = codec;
+    *wp++ = flags;
+    *wp++ = 0x00;                         /* reserved byte 3 */
+    *wp++ = (unsigned char) ( ( hdr_len >> 8 ) & 0xFF );
+    *wp++ = (unsigned char) (   hdr_len        & 0xFF );
+    if ( hdr_len > 0 )
+    {
+        memcpy( wp, header_json, hdr_len );
+        wp += hdr_len;
+    }
+    if ( body_len > 0 && body != NULL )
+    {
+        memcpy( wp, body, body_len );
+    }
+
+    g_binary_emitter( payload, payload_len, g_binary_emitter_ctx );
+    free( payload );
+    return 0;
 }
 
 static void
@@ -580,6 +676,111 @@ server_is_terminator( const char *s )
           || strcmp( s, "end"  ) == 0 );
 }
 
+/* Inline-screenshot command (05-rendering-and-streaming.md §7.1).
+ * Emits a kind=0x02 binary frame carrying the PNG body, then a normal
+ * JSON response with {seq, w, h, bytes}. Rejects on transports that
+ * can't carry binary frames (stdio) with a typed error.
+ *
+ * Accepts both the bare command `screenshot` and JSON request forms:
+ *   {"cmd":"screenshot"}
+ *   {"cmd":"screenshot","alpha":true}
+ *
+ * Returns 1 if the command was handled (and the caller should skip
+ * query dispatch + parse_command), 0 otherwise.
+ */
+static int
+server_try_screenshot( ServerRequest *req, Analysis *analy )
+{
+    int            alpha = 0;
+    unsigned char *rgba  = NULL;
+    int            w     = 0;
+    int            h     = 0;
+    unsigned char *png   = NULL;
+    size_t         png_len = 0;
+    unsigned long long seq;
+
+    if ( req == NULL || req->cmd == NULL )
+        return 0;
+    if ( strncmp( req->cmd, "screenshot", 10 ) != 0 )
+        return 0;
+    /* Accept exact match and the "screenshot ..." space-separated form. */
+    if ( req->cmd[10] != '\0' && req->cmd[10] != ' ' && req->cmd[10] != '\t' )
+        return 0;
+
+    if ( !server_has_binary_transport() )
+    {
+        server_emit_error( req->id, "unsupported_command",
+                           "screenshot requires a binary-capable transport"
+                           " (use outrgb/outpng for disk output on stdio)" );
+        return 1;
+    }
+
+    /* Optional alpha flag from the JSON request body. */
+    if ( req->json != NULL )
+    {
+        cJSON *alpha_item = cJSON_GetObjectItemCaseSensitive(
+            (cJSON *) req->json, "alpha" );
+        if ( cJSON_IsBool( alpha_item ) )
+            alpha = cJSON_IsTrue( alpha_item ) ? 1 : 0;
+    }
+
+    if ( server_render_capture_rgba( analy, &rgba, &w, &h ) != 0
+         || rgba == NULL )
+    {
+        server_emit_error( req->id, "internal_error",
+                           "failed to capture offscreen framebuffer" );
+        return 1;
+    }
+
+    if ( server_render_encode_png( rgba, w, h, alpha,
+                                   &png, &png_len ) != 0
+         || png == NULL )
+    {
+        free( rgba );
+        server_emit_error( req->id, "internal_error",
+                           "PNG encode failed" );
+        return 1;
+    }
+    free( rgba );
+
+    seq = server_render_next_frame_seq();
+
+    /* Build the JSON sub-header describing the body. The client uses
+     * `request_id` to correlate the binary frame with the pending
+     * request. */
+    {
+        cJSON *hdr = cJSON_CreateObject();
+        char  *hdr_txt = NULL;
+        if ( req->id != NULL )
+            cJSON_AddStringToObject( hdr, "request_id", req->id );
+        cJSON_AddNumberToObject( hdr, "w",       (double) w );
+        cJSON_AddNumberToObject( hdr, "h",       (double) h );
+        cJSON_AddNumberToObject( hdr, "seq",     (double) seq );
+        cJSON_AddStringToObject( hdr, "fmt",     "png" );
+        cJSON_AddNumberToObject( hdr, "bytes",   (double) png_len );
+        hdr_txt = cJSON_PrintUnformatted( hdr );
+        cJSON_Delete( hdr );
+
+        /* subtype=0x02 (screenshot), codec=0x02 (png), flags=0x04 (last). */
+        (void) server_emit_binary_frame( 0x02, 0x02, 0x04,
+                                         hdr_txt, png, png_len );
+        free( hdr_txt );
+    }
+    free( png );
+
+    {
+        cJSON *data = cJSON_CreateObject();
+        cJSON_AddNumberToObject( data, "seq",   (double) seq );
+        cJSON_AddNumberToObject( data, "w",     (double) w );
+        cJSON_AddNumberToObject( data, "h",     (double) h );
+        cJSON_AddNumberToObject( data, "bytes", (double) png_len );
+        cJSON_AddStringToObject( data, "fmt",   "png" );
+        server_emit_data_response( req->id, data );
+    }
+
+    return 1;
+}
+
 int
 server_core_dispatch_line( const char *line, Analysis *analy )
 {
@@ -617,6 +818,16 @@ server_core_dispatch_line( const char *line, Analysis *analy )
      * They bypass parse_command and emit a response with a populated
      * `data` field. */
     if ( server_try_query( req.id, req.cmd, analy ) )
+    {
+        server_request_free( &req );
+        return 0;
+    }
+
+    /* Inline screenshot: drives the render + PNG path and emits its own
+     * binary frame + response envelope. Handled before parse_command so
+     * we don't need a new interpret.c keyword and so the stdio-mode
+     * guard lives next to the transport emitter check. */
+    if ( server_try_screenshot( &req, analy ) )
     {
         server_request_free( &req );
         return 0;

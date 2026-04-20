@@ -51,6 +51,48 @@ ServerLineEmitter  server_current_line_emitter( void **ctx_out );
  * framing header. Safe to call with NULL — does nothing. */
 void               server_emit_raw(             const char *json_text );
 
+/* Binary-frame emitter hook (02-protocol.md §2.2, §3). Writes the
+ * payload of a `kind=0x02` frame. The payload already carries the
+ * subtype/codec/flags header and optional JSON sub-header built by
+ * server_emit_binary_frame(); the transport emitter is only
+ * responsible for framing (length prefix on RPC, discard on stdio).
+ */
+typedef void (*ServerBinaryEmitter)( const unsigned char *payload,
+                                     size_t len, void *ctx );
+
+/* Install a binary-frame emitter. NULL restores the default (a silent
+ * no-op — binary frames are not carried over stdio). */
+void server_set_binary_emitter( ServerBinaryEmitter fn, void *ctx );
+
+/* Query whether a non-default binary emitter is installed (i.e., the
+ * transport can carry binary frames). Used by command handlers that
+ * need to reject `screenshot` on stdio with a typed error. */
+int  server_has_binary_transport( void );
+
+/* Build a kind=0x02 frame payload and dispatch to the binary emitter.
+ *
+ *   subtype      : 0x01=frame, 0x02=screenshot, 0x03=pick_buffer, ...
+ *   codec        : 0x00=raw, 0x01=jpeg, 0x02=png, 0x03=h264, ...
+ *   flags        : bit0=continuation, bit1=keyframe, bit2=last.
+ *   header_json  : optional UTF-8 JSON object describing the body
+ *                  (e.g. `{"request_id":"abc","w":1024,"h":1024,"fmt":"png"}`);
+ *                  may be NULL or empty.
+ *   body         : codec-encoded body bytes; may be NULL if body_len=0.
+ *   body_len     : length of `body` in bytes.
+ *
+ * Returns 0 on success, -1 on size-cap overflow, no installed emitter,
+ * or allocation failure. The payload is at most
+ *   4 + 2 + strlen(header_json) + body_len bytes
+ * and must stay under the 16 MiB transport cap; callers that expect
+ * larger bodies must chunk into continuation frames.
+ */
+int server_emit_binary_frame( unsigned char       subtype,
+                              unsigned char       codec,
+                              unsigned char       flags,
+                              const char         *header_json,
+                              const unsigned char *body,
+                              size_t              body_len );
+
 typedef struct {
     /* Command string to feed the interpreter. Points into either the
      * caller's raw line buffer or into an owning cJSON object held in
