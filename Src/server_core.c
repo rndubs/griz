@@ -781,6 +781,79 @@ server_try_screenshot( ServerRequest *req, Analysis *analy )
     return 1;
 }
 
+/* Viewport resize (05-rendering-and-streaming.md §2.1). JSON shape:
+ *   {"cmd":"resize","w":<int>,"h":<int>}
+ * Both dimensions are required integers; we reject missing/non-numeric
+ * fields as invalid_request and out-of-range (> 4096) as resource_limit.
+ * On success we emit a state_changed follow-up through the normal
+ * notify path + an auto-push JPEG frame so the client immediately sees
+ * the new viewport size.
+ */
+static int
+server_try_resize( ServerRequest *req, Analysis *analy )
+{
+    cJSON *w_item;
+    cJSON *h_item;
+    int    w;
+    int    h;
+    int    rc;
+
+    if ( req == NULL || req->cmd == NULL )
+        return 0;
+    if ( strcmp( req->cmd, "resize" ) != 0 )
+        return 0;
+
+    if ( req->json == NULL )
+    {
+        server_emit_error( req->id, "invalid_request",
+                           "resize requires a JSON request body with"
+                           " integer 'w' and 'h' fields" );
+        return 1;
+    }
+
+    w_item = cJSON_GetObjectItemCaseSensitive( (cJSON *) req->json, "w" );
+    h_item = cJSON_GetObjectItemCaseSensitive( (cJSON *) req->json, "h" );
+    if ( !cJSON_IsNumber( w_item ) || !cJSON_IsNumber( h_item ) )
+    {
+        server_emit_error( req->id, "invalid_request",
+                           "resize requires integer 'w' and 'h' fields" );
+        return 1;
+    }
+    w = (int) w_item->valuedouble;
+    h = (int) h_item->valuedouble;
+
+    rc = server_render_resize_viewport( w, h );
+    if ( rc == 1 )
+    {
+        server_emit_error( req->id, "resource_limit",
+                           "viewport dimensions out of range"
+                           " (each axis must be 1..4096)" );
+        return 1;
+    }
+    if ( rc != 0 )
+    {
+        server_emit_error( req->id, "internal_error",
+                           "OSMesa context resize failed" );
+        return 1;
+    }
+
+    {
+        cJSON *data = cJSON_CreateObject();
+        cJSON_AddNumberToObject( data, "w", (double) w );
+        cJSON_AddNumberToObject( data, "h", (double) h );
+        server_emit_data_response( req->id, data );
+    }
+
+    /* Resize dirties the view on every downstream query: publish a
+     * state_changed event + push a fresh frame so the client sees the
+     * new dimensions without having to round-trip another command. */
+    notify_state_all();
+    notify_state_flush( analy );
+    (void) server_render_push_jpeg_frame( analy, 0 );
+
+    return 1;
+}
+
 int
 server_core_dispatch_line( const char *line, Analysis *analy )
 {
@@ -833,6 +906,15 @@ server_core_dispatch_line( const char *line, Analysis *analy )
         return 0;
     }
 
+    /* Viewport resize. Handled before parse_command because it isn't a
+     * griz interpreter command — it reshapes the OSMesa framebuffer
+     * and GL viewport directly. */
+    if ( server_try_resize( &req, analy ) )
+    {
+        server_request_free( &req );
+        return 0;
+    }
+
     /* parse_command() takes a mutable buffer (it tokenises in place);
      * copy the resolved command so the cJSON-owned string is not
      * disturbed. Truncate on overflow — GRIZ_SERVER_MAX_LINE matches
@@ -877,6 +959,13 @@ server_core_dispatch_line( const char *line, Analysis *analy )
         {
             notify_state_all();
             notify_state_flush( analy );
+
+            /* Push an auto-rendered JPEG frame on any transport that
+             * carries binary frames (RPC). Pure query commands return
+             * early above, so this only fires for genuinely mutating
+             * commands — the MVP proof-of-life path from
+             * 05-rendering-and-streaming.md §9. No-op on stdio. */
+            (void) server_render_push_jpeg_frame( analy, 0 );
         }
     }
     server_request_free( &req );

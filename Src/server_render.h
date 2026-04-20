@@ -67,10 +67,57 @@ int server_render_encode_png( const unsigned char *rgba,
                               unsigned char **out_png,
                               size_t *out_len );
 
+/* Encode an RGBA8 buffer into a baseline JPEG byte stream. Alpha is
+ * discarded (JPEG has no alpha channel).
+ *
+ *   rgba         : W * H * 4 bytes, top-to-bottom row order.
+ *   width,height : image dimensions in pixels.
+ *   quality      : 1..100 (85 is the MVP default per
+ *                  05-rendering-and-streaming.md §4.1).
+ *   out_jpeg     : receives the allocated JPEG byte stream.
+ *   out_len      : receives the length in bytes.
+ *
+ * Returns 0 on success, -1 on libjpeg / allocation failure.
+ */
+int server_render_encode_jpeg( const unsigned char *rgba,
+                               int width, int height, int quality,
+                               unsigned char **out_jpeg,
+                               size_t *out_len );
+
+/* Render + encode the current view as a JPEG and push it as a
+ * `kind=0x02` subtype=0x01 codec=0x01 binary frame on the installed
+ * binary emitter. The frame's JSON sub-header carries
+ *   { w, h, seq, fmt:"jpeg", bytes, quality, encode_ms, rendered_at }
+ * per 05-rendering-and-streaming.md §4.1.
+ *
+ * No-op if the current transport does not carry binary frames (stdio);
+ * returns -1 in that case. Otherwise 0 on success, -1 on render /
+ * encode / emit failure. `quality` is clamped to [1, 100]; pass 0 to
+ * use the MVP default (85). */
+int server_render_push_jpeg_frame( Analysis *analy, int quality );
+
 /* Return the next monotonic frame-sequence counter. Each successful
  * capture or inline-screenshot emission burns one seq; clients infer
  * drops from gaps (02-protocol.md §4.2). */
 unsigned long long server_render_next_frame_seq( void );
+
+/* Resize the OSMesa viewport to (w, h).
+ *
+ * Allocates a fresh RGBA8 backing buffer, rebinds the existing
+ * OSMesa_ctx to it via OSMesaMakeCurrent(), and propagates the new
+ * dimensions into the legacy GL viewport state (`glViewport()` +
+ * `set_mesh_view()` so `v_win->vp_width/vp_height` update). The caller
+ * is expected to trigger a redraw after this returns — typically by
+ * letting `analy->update_display()` run on the next render.
+ *
+ * Size cap: 05-rendering-and-streaming.md §2.1 — (w, h) each ≤ 4096.
+ * Returns 0 on success, -1 on allocation failure, 1 on invalid size
+ * (< 1 or > 4096 on either axis). The previous backing buffer
+ * allocated inside server_render_resize_viewport() is freed; the
+ * initial buffer set up by OffscreenContext() at startup is not
+ * tracked and leaks on the first resize (one-time, <=64 MiB).
+ */
+int server_render_resize_viewport( int w, int h );
 
 #endif /* GRIZ_SERVER_BUILD */
 
