@@ -25,6 +25,32 @@
 
 #ifdef GRIZ_SERVER_BUILD
 
+#include <stddef.h>
+
+#include "viewer.h"
+
+/* Transport-neutral "emit a JSON envelope" hook. Every response, event,
+ * and hello_ack routes through the installed emitter. The stdio
+ * transport installs a default emitter that writes `buf` followed by a
+ * newline to stdout; the RPC transport (Src/server_rpc.c) installs an
+ * emitter that length-prefixes `buf` into a kind=0x01 frame on the
+ * socket. `buf` is a UTF-8 JSON object, `len` is strlen(buf), and the
+ * emitter must not hold onto `buf` across the call.
+ */
+typedef void (*ServerLineEmitter)( const char *buf, size_t len, void *ctx );
+
+/* Install a new emitter. Passing NULL restores the built-in stdout
+ * emitter. The previous emitter/ctx are not returned; callers that
+ * need to restore should capture them via server_current_line_emitter()
+ * before installing a replacement. */
+void               server_set_line_emitter(     ServerLineEmitter fn, void *ctx );
+ServerLineEmitter  server_current_line_emitter( void **ctx_out );
+
+/* Emit a single framed JSON envelope through the current emitter. The
+ * stdio emitter appends a newline; the RPC emitter prepends a 5-byte
+ * framing header. Safe to call with NULL — does nothing. */
+void               server_emit_raw(             const char *json_text );
+
 typedef struct {
     /* Command string to feed the interpreter. Points into either the
      * caller's raw line buffer or into an owning cJSON object held in
@@ -165,6 +191,26 @@ int server_try_hello( const char *line );
  * Returns `arr` for chaining. Defined in results.c. */
 void *server_build_results_from_htable( void *arr, void *ht,
                                         const char *origin_label );
+
+/* Transport-neutral one-line dispatcher. Consumes a single input line
+ * (raw command or JSON envelope), parses it, drives the hello / query /
+ * parse_command / state_changed pipeline, and emits the response and
+ * any pending state_changed event through the installed emitter.
+ *
+ * Returns:
+ *    0  — normal, caller should continue reading.
+ *    1  — terminator command (quit/exit/end) observed; caller should
+ *         drain and close the transport.
+ *
+ * All JSON-shape errors are reported inline via an error response and
+ * still return 0 so the caller keeps reading.
+ *
+ * `line` is used in place: on a raw command it is handed straight to
+ * parse_command; on a JSON request it is cJSON-parsed. parse_command
+ * tokenises in place, so the dispatcher copies into a scratch buffer
+ * first.
+ */
+int server_core_dispatch_line( const char *line, Analysis *analy );
 
 #endif /* GRIZ_SERVER_BUILD */
 

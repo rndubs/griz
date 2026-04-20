@@ -7,10 +7,18 @@
  * the interactive/batch main() with a dispatcher that selects a
  * transport-specific loop based on --transport.
  *
- * Phase 1 scope (see planning/MCP.md): stdio transport only. The
- * per-transport setup and main loop live in viewer.c's
- * process_server_mode_stdio(), which accepts plain-text commands on
- * stdin. The RPC transport is reserved for the Qt UI effort.
+ * Transports:
+ *   --transport=stdio : newline-delimited JSON on stdin/stdout. Used
+ *                        by the MCP Python bridge (planning/MCP.md).
+ *   --transport=rpc   : length-framed JSON on a loopback TCP socket,
+ *                        with a rendezvous file + token handshake.
+ *                        Used by the Qt UI client (planning/UI.md).
+ *
+ * RPC-specific flags (all optional; sensible defaults for local dev):
+ *   --bind=HOST           bind address (default 127.0.0.1)
+ *   --port=N              bind port (default 0 = kernel-assigned)
+ *   --rendezvous=PATH     rendezvous JSON path (default
+ *                          $HOME/.griz/rendezvous/<session-id>.json)
  */
 
 #include <stdio.h>
@@ -18,13 +26,15 @@
 #include <string.h>
 
 #include "viewer.h"
+#include "server_rpc.h"
 
 static void
 server_usage(void)
 {
     fprintf(stderr,
         "Usage: griz-server --transport={stdio|rpc} -i <database>\n"
-        "                   [-w <width> <height>] [--port=N]\n");
+        "                   [-w <width> <height>]\n"
+        "                   [--bind=HOST] [--port=N] [--rendezvous=PATH]\n");
 }
 
 int
@@ -32,8 +42,11 @@ main(int argc, char *argv[])
 {
     const char *transport = NULL;
     const char *db_path = NULL;
+    const char *bind_host = NULL;
+    const char *rendezvous_path = NULL;
     int width = 0;
     int height = 0;
+    int port = 0;
     int i;
 
     for (i = 1; i < argc; i++) {
@@ -62,9 +75,17 @@ main(int argc, char *argv[])
                 return 1;
             }
             i += 2;
+        } else if (strncmp(argv[i], "--bind=", 7) == 0) {
+            bind_host = argv[i] + 7;
         } else if (strncmp(argv[i], "--port=", 7) == 0) {
-            /* Ignored for stdio; consumed by rpc transport later. */
-            continue;
+            port = atoi(argv[i] + 7);
+            if (port < 0 || port > 65535) {
+                fprintf(stderr,
+                    "griz-server: --port must be in 0..65535\n");
+                return 1;
+            }
+        } else if (strncmp(argv[i], "--rendezvous=", 13) == 0) {
+            rendezvous_path = argv[i] + 13;
         } else if (strcmp(argv[i], "-h") == 0
                    || strcmp(argv[i], "--help") == 0) {
             server_usage();
@@ -94,9 +115,8 @@ main(int argc, char *argv[])
     }
 
     if (strcmp(transport, "rpc") == 0) {
-        fprintf(stderr,
-            "griz-server: transport=rpc is not implemented yet\n");
-        return 1;
+        return process_server_mode_rpc(db_path, width, height,
+                                       bind_host, port, rendezvous_path);
     }
 
     fprintf(stderr, "griz-server: unknown transport '%s'\n", transport);

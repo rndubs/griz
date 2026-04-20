@@ -251,8 +251,8 @@ ifeq (@BATCH_ENABLE@,True)
 # beyond cJSON.c itself — neither gets pulled into batch_opt.
 CJSON_DIR = $(abs_top_srcdir)/ext/cJSON
 SERVER_OBJS = $(OBJS) server_main.o server_core.o \
-              server_core_startup.o server_stdio.o server_query.o \
-              server_events.o cJSON.o
+              server_core_startup.o server_stdio.o server_rpc.o \
+              server_query.o server_events.o cJSON.o
 
 server_opt:	LIBS = $(BASELIBS) $(OSMESA_LIBS) @X11_LIBRARY_PATHS@ @NO_MESA_X11_LIBS@
 server_opt:	LDFLAGS_EXTRA += $(OSMESA_LIBS) @X11_LIBRARY_PATHS@ @NO_MESA_X11_LIBS@
