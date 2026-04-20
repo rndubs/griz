@@ -105,17 +105,17 @@ class TestRpcSmokeWithRealDatabase:
     def test_open_database(self):
         result = _call_tool(self._mcp(), "open_database", {"path": str(DEFAULT_DB)})
         state = _json_from(result)
-        assert "time_state" in state
-        assert "state_count" in state
-        assert state["state_count"] > 0
+        assert "time_state" in state["time"]
+        assert "state_count" in state["time"]
+        assert state["time"]["state_count"] > 0
 
     def test_open_and_get_state(self):
         mcp = self._mcp()
         _call_tool(mcp, "open_database", {"path": str(DEFAULT_DB)})
         result = _call_tool(mcp, "get_state")
         state = _json_from(result)
-        assert state["time_state"] == 0
-        assert state["state_count"] == 81
+        assert state["time"]["time_state"] == 0
+        assert state["time"]["state_count"] == 81
         assert state["viewport"] == {"width": 1024, "height": 1024}
 
     def test_list_fields(self):
@@ -140,17 +140,17 @@ class TestRpcSmokeWithRealDatabase:
         _call_tool(mcp, "open_database", {"path": str(DEFAULT_DB)})
         result = _call_tool(mcp, "set_time_state", {"state": 10})
         state = _json_from(result)
-        assert state["time_state"] == 9
+        assert state["time"]["time_state"] == 9
 
     def test_rotate_and_reset_view(self):
         mcp = self._mcp()
         _call_tool(mcp, "open_database", {"path": str(DEFAULT_DB)})
         result = _call_tool(mcp, "rotate_view", {"x": 45.0, "y": 30.0})
         state = _json_from(result)
-        assert "time_state" in state
+        assert "time_state" in state["time"]
         result = _call_tool(mcp, "reset_view")
         state = _json_from(result)
-        assert "time_state" in state
+        assert "time_state" in state["time"]
 
     def test_list_materials(self):
         mcp = self._mcp()
@@ -167,10 +167,10 @@ class TestRpcSmokeWithRealDatabase:
         _call_tool(mcp, "open_database", {"path": str(DEFAULT_DB)})
         result = _call_tool(mcp, "hide_materials", {"material_ids": [1]})
         state = _json_from(result)
-        assert "time_state" in state
+        assert "time_state" in state["time"]
         result = _call_tool(mcp, "show_materials", {"material_ids": [1]})
         state = _json_from(result)
-        assert "time_state" in state
+        assert "time_state" in state["time"]
 
     def test_screenshot_returns_png(self):
         mcp = self._mcp()
@@ -204,7 +204,7 @@ class TestRpcSmokeWithRealDatabase:
     def test_full_workflow(self):
         mcp = self._mcp()
         state = _json_from(_call_tool(mcp, "open_database", {"path": str(DEFAULT_DB)}))
-        assert state["state_count"] == 81
+        assert state["time"]["state_count"] == 81
 
         fields = _json_from(_call_tool(mcp, "list_fields"))
         assert len(fields) > 0
@@ -215,7 +215,7 @@ class TestRpcSmokeWithRealDatabase:
         assert state["current_field"] == "sx"
 
         state = _json_from(_call_tool(mcp, "set_time_state", {"state": 40}))
-        assert state["time_state"] == 39
+        assert state["time"]["time_state"] == 39
 
         _call_tool(mcp, "rotate_view", {"x": 30.0, "y": 45.0})
 

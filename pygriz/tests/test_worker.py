@@ -111,9 +111,11 @@ def test_q_state_returns_structured_data(griz_bin, sample_database):
     assert resp["status"] == "ok"
     data = resp.get("data")
     assert isinstance(data, dict)
-    assert "time_state" in data
-    assert "max_time_state" in data
-    assert "state_count" in data
+    time_block = data.get("time")
+    assert isinstance(time_block, dict)
+    assert "time_state" in time_block
+    assert "max_time_state" in time_block
+    assert "state_count" in time_block
     viewport = data.get("viewport")
     assert viewport == {"width": 256, "height": 256}
 
