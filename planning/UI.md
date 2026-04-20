@@ -9,11 +9,11 @@ Status legend: ⬜ not started · 🟡 in progress · ✅ done
 ### Phase 1 — Server refactor & query surface (shared with MCP)
 Source: [03-server.md §9 steps 1–5](ui-design/03-server.md). Richer state + events on today's shipped stdio server; no RPC dependency. Benefits the MCP bridge too.
 
-- ⬜ Extract `server_core_startup.c` and `server_stdio.c` from `Src/viewer.c:3118–3302` (no behavior change).
-- ⬜ Extract `server_query.c` from `Src/viewer.c:2955–3116` (no behavior change).
-- ⬜ Extend `q_state`, `q_view`, `q_materials` payloads to the full schema in [`shared/query-commands.md`](shared/query-commands.md) — [03-server.md §4](ui-design/03-server.md).
-- ⬜ Implement `q_selection`, `q_render`, `q_database`.
-- ⬜ Implement `notify_state` + `Src/server_events.c` + `state_changed` event emission with monotonic `state_seq` and `state_overflow` sentinel — [03-server.md §5](ui-design/03-server.md).
+- ✅ Extract `server_core_startup.c` and `server_stdio.c` from `Src/viewer.c:3118–3302` (no behavior change).
+- ✅ Extract `server_query.c` from `Src/viewer.c:2955–3116` (no behavior change).
+- ✅ Extend `q_state`, `q_view`, `q_materials` payloads to the full schema in [`shared/query-commands.md`](shared/query-commands.md) — [03-server.md §4](ui-design/03-server.md).
+- ✅ Implement `q_selection`, `q_render`, `q_database`.
+- 🟡 Implement `notify_state` + `Src/server_events.c` + `state_changed` event emission with monotonic `state_seq` — [03-server.md §5](ui-design/03-server.md). *(MVP blanket `notify_state_all()` after each mutating command; per-handler `interpret.c` instrumentation and `state_overflow` sentinel are follow-on.)*
 
 ### Phase 2 — RPC transport
 Source: [02-protocol.md §7](ui-design/02-protocol.md), [03-server.md §9 steps 6–8](ui-design/03-server.md).

@@ -163,7 +163,7 @@ Previously gated on Phase 2 server work: `q_results` and `q_materials` are now i
 - [x] [shared/server-binary.md](shared/server-binary.md) — `griz-server` target & transports *(design complete; stdio transport implemented and working. RPC transport is a future UI concern.)*
 - [x] [shared/command-protocol.md](shared/command-protocol.md) — envelope & handshake *(design complete; envelope, handshake, and error taxonomy all implemented in Phase 2. Open questions on back-pressure and cancellation are deferred to later phases.)*
 - [x] [shared/output-capture.md](shared/output-capture.md) — `griz_out` / `griz_err` plumbing *(design complete; implementation uses fd-level `dup2` redirect rather than source-level sinks — functionally equivalent, doc update tracked in MVP polish above.)*
-- [x] [shared/query-commands.md](shared/query-commands.md) — `q_*` commands & state schema *(design complete; `q_state`/`q_view`/`q_time` implemented. Remaining commands `q_results`/`q_materials`/`q_selection`/`q_render`/`q_database` tracked in MVP polish above.)*
+- [x] [shared/query-commands.md](shared/query-commands.md) — `q_*` commands & state schema *(design complete; UI Phase 1 landed the full catalog — `q_state`/`q_time`/`q_view`/`q_materials`/`q_results`/`q_selection`/`q_render`/`q_database`. Builders live in `Src/server_query.c`. `state_changed` events fire after each non-query command through `Src/server_events.c` (MVP: blanket full-snapshot; per-handler `notify_state(key)` instrumentation of `interpret.c` is a follow-on.))*
 - [x] [shared/results-map.md](shared/results-map.md) — `results_map.yaml` as single source of truth *(design complete; YAML file and Python loader implemented. Server-side generated header deferred until `q_results` lands.)*
 
 ---
