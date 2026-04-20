@@ -17,4 +17,5 @@ target_link_libraries(griz-client
 
 target_compile_definitions(griz-client
     PRIVATE
-        GRIZ_CLIENT_VERSION="${PROJECT_VERSION}")
+        GRIZ_CLIENT_VERSION="${PROJECT_VERSION}"
+        GRIZ_REPO_ROOT="${GRIZ_REPO_ROOT}")

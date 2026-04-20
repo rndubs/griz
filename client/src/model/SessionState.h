@@ -15,41 +15,60 @@ struct DatabaseInfo {
     QString path;
     QString title;
     int     numStates = 0;
+    int     numNodes  = 0;
+    int     numElems  = 0;
 };
 
 struct TimeState {
-    int    stateIndex = 0;
-    double value      = 0.0;
-    int    numStates  = 0;
+    int    state     = 0;
+    int    stateMin  = 0;
+    int    stateMax  = 0;
+    double time      = 0.0;
+    bool   animating = false;
 };
 
 struct ViewState {
-    double azimuth   = 0.0;
-    double elevation = 0.0;
-    double zoom      = 1.0;
+    double rotateX  = 0.0, rotateY  = 0.0, rotateZ  = 0.0;
+    double translateX = 0.0, translateY = 0.0, translateZ = 0.0;
+    double scaleX   = 1.0, scaleY   = 1.0, scaleZ   = 1.0;
+    double zoom     = 1.0;
+    int    width    = 0;
+    int    height   = 0;
 };
 
 struct RenderState {
-    bool onTime = false;
-    bool onCmap = false;
+    QString mode;
+    QString colormap;
+    bool    showCoord  = false;
+    bool    showTime   = false;
+    bool    showCmap   = false;
+    bool    showMinMax = false;
 };
 
 struct Material {
     int     id      = 0;
-    QString name;
+    QString label;
     bool    visible = true;
     bool    enabled = true;
+    double  colorR  = 0.0;
+    double  colorG  = 0.0;
+    double  colorB  = 0.0;
+    bool    hasColor = false;
 };
 
 struct ResultsState {
-    QString primary;
+    QString primary;       // active.field
+    QString component;     // active.component
+    QString grizName;      // active.griz_name
     double  min = 0.0;
     double  max = 0.0;
+    bool    hasActive = false;
 };
 
 struct Selection {
     std::vector<int> elements;
     std::vector<int> nodes;
+    bool             hasHighlighted = false;
 };
 
 class SessionState : public QObject {
@@ -66,15 +85,16 @@ public:
     const Selection&               selection()  const { return m_selection; }
     quint64                        lastSeq()    const { return m_lastSeq; }
 
-    // Apply a full q_state response; emits every *Changed signal.
-    void applyFullState(const QJsonObject &qStateResponse);
+    // Apply a full q_state response.data; emits every *Changed signal.
+    void applyFullState(const QJsonObject &qStateData);
 
-    // Apply a state_changed diff; emits only the changed signals and updates
-    // lastSeq(). Nested objects under "fields" are replacements, not merges
-    // (see planning/ui-design/04-client.md §4.2).
+    // Apply a state_changed diff payload (the event's "fields" object, plus
+    // state_seq from the envelope). Nested objects under "fields" are
+    // replacements, not merges (see planning/ui-design/04-client.md §4.2).
     void applyDiff(const QJsonObject &stateChangedEvent);
 
 signals:
+    void databaseChanged(const griz::model::DatabaseInfo &);
     void timeChanged(const griz::model::TimeState &);
     void viewChanged(const griz::model::ViewState &);
     void renderChanged(const griz::model::RenderState &);
@@ -84,6 +104,14 @@ signals:
     void stateOverflow();
 
 private:
+    void applyDatabase(const QJsonObject &obj);
+    void applyTime(const QJsonObject &obj);
+    void applyView(const QJsonObject &obj);
+    void applyRender(const QJsonObject &obj);
+    void applyMaterials(const QJsonObject &obj);
+    void applyResults(const QJsonObject &obj);
+    void applySelection(const QJsonObject &obj);
+
     DatabaseInfo          m_database;
     TimeState             m_time;
     ViewState             m_view;

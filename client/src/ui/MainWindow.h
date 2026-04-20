@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QString>
 
 // Top-level window per planning/ui-design/04-client.md §3.
 // MVP layout (hardcoded defaults; save/restore is post-MVP §13):
@@ -16,6 +17,8 @@
 //   | status: connection | fps | host | seq  |
 //   +-----------------------------------------+
 
+class QLabel;
+
 namespace griz::ui {
 
 class Console;
@@ -30,6 +33,16 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
 
+    Console       *console()       const { return m_console; }
+    Viewport      *viewport()      const { return m_viewport; }
+    MaterialsDock *materialsDock() const { return m_materialsDock; }
+
+public slots:
+    void setConnectionStatus(const QString &text);
+    void setHostLabel(const QString &text);
+    void setStateSeqLabel(quint64 seq);
+    void setFpsLabel(double fps);
+
 private:
     void buildMenuBar();
     void buildDocks();
@@ -41,6 +54,11 @@ private:
     ResultsDock   *m_resultsDock   = nullptr;
     SelectionDock *m_selectionDock = nullptr;
     TimeSlider    *m_timeSlider    = nullptr;
+
+    QLabel        *m_statusConnection = nullptr;
+    QLabel        *m_statusFps        = nullptr;
+    QLabel        *m_statusHost       = nullptr;
+    QLabel        *m_statusSeq        = nullptr;
 };
 
 } // namespace griz::ui

@@ -25,6 +25,8 @@ find_package(Qt5 5.15 REQUIRED COMPONENTS
     OpenGL
     Concurrent)
 
+get_filename_component(GRIZ_REPO_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
+
 add_subdirectory(src)
 
 option(GRIZ_CLIENT_BUILD_TESTS "Build client-side unit tests" ON)

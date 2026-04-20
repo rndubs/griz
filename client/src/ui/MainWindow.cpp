@@ -62,10 +62,35 @@ void MainWindow::buildDocks() {
 
 void MainWindow::buildStatusBar() {
     auto *sb = statusBar();
-    sb->addPermanentWidget(new QLabel(tr("disconnected"), this));
-    sb->addPermanentWidget(new QLabel(tr("—"), this)); // FPS
-    sb->addPermanentWidget(new QLabel(tr("local"), this)); // host
-    sb->addPermanentWidget(new QLabel(tr("seq=0"), this));
+    m_statusConnection = new QLabel(tr("disconnected"), this);
+    m_statusFps        = new QLabel(tr("—"), this);
+    m_statusHost       = new QLabel(tr("local"), this);
+    m_statusSeq        = new QLabel(tr("seq=0"), this);
+    sb->addPermanentWidget(m_statusConnection);
+    sb->addPermanentWidget(m_statusFps);
+    sb->addPermanentWidget(m_statusHost);
+    sb->addPermanentWidget(m_statusSeq);
+}
+
+void MainWindow::setConnectionStatus(const QString &text) {
+    if (m_statusConnection) m_statusConnection->setText(text);
+}
+
+void MainWindow::setHostLabel(const QString &text) {
+    if (m_statusHost) m_statusHost->setText(text);
+}
+
+void MainWindow::setStateSeqLabel(quint64 seq) {
+    if (m_statusSeq) m_statusSeq->setText(tr("seq=%1").arg(seq));
+}
+
+void MainWindow::setFpsLabel(double fps) {
+    if (!m_statusFps) return;
+    if (fps <= 0.0) {
+        m_statusFps->setText(QStringLiteral("—"));
+    } else {
+        m_statusFps->setText(QStringLiteral("%1 fps").arg(fps, 0, 'f', 1));
+    }
 }
 
 } // namespace griz::ui
