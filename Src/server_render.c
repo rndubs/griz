@@ -39,8 +39,25 @@ static unsigned char *s_osmesa_buffer = NULL;
 /* Per-axis cap from 05-rendering-and-streaming.md §2.1. */
 #define SERVER_RENDER_VIEWPORT_MAX 4096
 
+/* 30 Hz cadence cap from 05-rendering-and-streaming.md §5.3. ~33.333 ms
+ * between successful auto-push frames. Excess is coalesced into a
+ * "pending" bit drained lazily by server_render_flush_deferred_if_due(). */
+#define SERVER_FRAME_MIN_INTERVAL_MS 33
+
+static long long s_last_push_ms       = 0; /* 0 → "never pushed". */
+static int       s_pending_deferred   = 0; /* 1 → a frame was coalesced. */
+
 /* Pulled in from viewer.c. */
 extern OSMesaContext OSMesa_ctx;
+
+static long long
+monotonic_ms( void )
+{
+    struct timespec ts;
+    if ( clock_gettime( CLOCK_MONOTONIC, &ts ) != 0 )
+        return 0;
+    return (long long) ts.tv_sec * 1000LL + (long long) ts.tv_nsec / 1000000LL;
+}
 
 unsigned long long
 server_render_next_frame_seq( void )
@@ -473,8 +490,11 @@ elapsed_ms( const struct timespec *start )
          + ( now.tv_nsec - start->tv_nsec ) / 1.0e6;
 }
 
-int
-server_render_push_jpeg_frame( Analysis *analy, int quality )
+/* Unconditional render + encode + push. Callers are expected to have
+ * already made the rate-limit decision. On success updates the
+ * last-push timestamp and clears the deferred-pending bit. */
+static int
+render_and_push_now( Analysis *analy, int quality )
 {
     unsigned char  *rgba    = NULL;
     int             w       = 0;
@@ -487,9 +507,6 @@ server_render_push_jpeg_frame( Analysis *analy, int quality )
     cJSON          *hdr;
     char           *hdr_txt;
     int             rc;
-
-    if ( !server_has_binary_transport() )
-        return -1;
 
     if ( quality <= 0 )
         quality = 85;
@@ -540,7 +557,82 @@ server_render_push_jpeg_frame( Analysis *analy, int quality )
                                    hdr_txt, jpeg, jpeg_len );
     free( hdr_txt );
     free( jpeg );
+
+    if ( rc == 0 )
+    {
+        s_last_push_ms     = monotonic_ms();
+        s_pending_deferred = 0;
+    }
     return rc;
+}
+
+int
+server_render_push_jpeg_frame( Analysis *analy, int quality )
+{
+    long long now;
+    long long since_last;
+
+    if ( !server_has_binary_transport() )
+        return -1;
+
+    now        = monotonic_ms();
+    since_last = s_last_push_ms == 0 ? SERVER_FRAME_MIN_INTERVAL_MS
+                                     : now - s_last_push_ms;
+
+    if ( since_last < SERVER_FRAME_MIN_INTERVAL_MS )
+    {
+        /* Coalesce: burn the frame_seq so the client sees a gap
+         * (02-protocol.md §4.2) and flag a deferred render for the
+         * idle-poll path to drain once the window opens. */
+        (void) server_render_next_frame_seq();
+        s_pending_deferred = 1;
+        return 0;
+    }
+
+    return render_and_push_now( analy, quality );
+}
+
+int
+server_render_ms_until_next_frame( void )
+{
+    long long now;
+    long long since_last;
+    long long remaining;
+
+    if ( s_last_push_ms == 0 )
+        return 0;
+
+    now        = monotonic_ms();
+    since_last = now - s_last_push_ms;
+    remaining  = SERVER_FRAME_MIN_INTERVAL_MS - since_last;
+    if ( remaining < 0 )
+        return 0;
+    if ( remaining > SERVER_FRAME_MIN_INTERVAL_MS )
+        return (int) SERVER_FRAME_MIN_INTERVAL_MS;
+    return (int) remaining;
+}
+
+int
+server_render_flush_deferred_if_due( Analysis *analy )
+{
+    long long now;
+
+    if ( !s_pending_deferred )
+        return 0;
+    if ( !server_has_binary_transport() )
+    {
+        s_pending_deferred = 0;
+        return 0;
+    }
+
+    now = monotonic_ms();
+    if ( s_last_push_ms != 0
+         && now - s_last_push_ms < SERVER_FRAME_MIN_INTERVAL_MS )
+        return 0;   /* still inside the cadence window — try again later */
+
+    if ( render_and_push_now( analy, 0 ) != 0 )
+        return -1;
+    return 1;
 }
 
 int

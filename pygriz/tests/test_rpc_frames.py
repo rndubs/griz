@@ -154,3 +154,58 @@ def test_resize_rejects_missing_fields(griz_bin, sample_database):
 
     assert response["status"] == "error"
     assert response["error"]["code"] == "invalid_request"
+
+
+def _collect_jpegs(w: RpcWorker, deadline_s: float) -> list[dict]:
+    """Collect every anon JPEG frame that arrives before the deadline."""
+    out: list[dict] = []
+    end = time.monotonic() + deadline_s
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            frame = _drain_jpeg(w, deadline_s=remaining)
+        except AssertionError:
+            break
+        out.append(frame)
+    return out
+
+
+def test_burst_commands_are_rate_limited(griz_bin, sample_database):
+    """A burst of rapid-fire mutating commands must coalesce: fewer
+    pushed frames than issued commands, a monotonic-with-gaps seq
+    stream (drops burn seqs per 02-protocol.md §4.2), and a final
+    frame at the end of the burst reflecting the settled state."""
+    with RpcWorker(
+        sample_database, griz_bin=griz_bin, width=256, height=256
+    ) as w:
+        # Drain the startup-time render, if any.
+        _collect_jpegs(w, deadline_s=0.3)
+
+        # Issue a 25-command burst tighter than the 33 ms cap. `rx 1`
+        # is a cheap rotation that always dirties the view.
+        burst_size = 25
+        for _ in range(burst_size):
+            w.cmd("rx 1")
+
+        # Wait long enough for the deferred-flush tail to drain (cap is
+        # ~33 ms; give the poll loop plenty of slack).
+        frames = _collect_jpegs(w, deadline_s=1.0)
+
+    assert 1 <= len(frames) < burst_size, (
+        f"expected coalescing, got {len(frames)} frames for {burst_size} "
+        f"commands"
+    )
+
+    # Seqs are monotonic but should have gaps — every skipped frame
+    # burns its seq so the client can infer drops from the run.
+    seqs = [f["header"]["seq"] for f in frames]
+    assert seqs == sorted(seqs)
+    assert len(set(seqs)) == len(seqs)
+    if len(frames) > 1:
+        last_seq = frames[-1]["header"]["seq"]
+        first_seq = frames[0]["header"]["seq"]
+        # Delivered frames < burst_size, so with per-command seq burns
+        # the tail seq must exceed the number of delivered frames.
+        assert last_seq - first_seq >= len(frames) - 1

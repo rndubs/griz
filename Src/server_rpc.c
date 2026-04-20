@@ -47,6 +47,7 @@
 #include "server_core.h"
 #include "server_core_startup.h"
 #include "server_events.h"
+#include "server_render.h"
 #include "server_rpc.h"
 
 /* --- Framing constants (02-protocol.md §2.2). ---------------------- */
@@ -832,13 +833,26 @@ process_server_mode_rpc( const char *db_path,
         if ( timeout_ms > RPC_POLL_TICK_MS ) timeout_ms = RPC_POLL_TICK_MS;
         if ( timeout_ms < 0 )                timeout_ms = 0;
 
+        /* If a deferred frame is queued by the 30 Hz rate limiter
+         * (05-rendering-and-streaming.md §5.3), wake up no later than
+         * the start of the next allowed push so the queued frame is
+         * drained without waiting for the second-scale poll tick. */
+        {
+            int frame_wait_ms = server_render_ms_until_next_frame();
+            if ( frame_wait_ms >= 0 && frame_wait_ms < timeout_ms )
+                timeout_ms = frame_wait_ms;
+        }
+
         pr = rpc_poll_readable( client_fd, timeout_ms );
         if ( pr < 0 )
             break;
         if ( pr == 0 )
         {
-            /* Pure timeout: only now do we check peer_idle, since any
-             * queued inbound bytes would have made poll return readable. */
+            /* Pure timeout: flush a deferred frame if the cadence
+             * window has opened, then check peer_idle (any queued
+             * inbound bytes would have made poll return readable). */
+            (void) server_render_flush_deferred_if_due( analy );
+
             if ( rpc_now_ms() - g_rpc.last_inbound_ms
                  >= RPC_PEER_IDLE_TIMEOUT_MS )
             {

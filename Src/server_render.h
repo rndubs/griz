@@ -90,11 +90,35 @@ int server_render_encode_jpeg( const unsigned char *rgba,
  *   { w, h, seq, fmt:"jpeg", bytes, quality, encode_ms, rendered_at }
  * per 05-rendering-and-streaming.md §4.1.
  *
+ * Rate-limited to the 30 Hz cadence cap from 05 §5.3: if called less
+ * than ~33.3 ms after the previous successful push, the render and
+ * encode are skipped, the frame-seq counter is burned (so the client
+ * infers a drop from the gap per 02-protocol.md §4.2), and a
+ * "deferred frame is pending" flag is set. The pending frame is
+ * drained lazily by server_render_flush_deferred_if_due() on the
+ * next idle poll tick so a drag burst still ends on a fresh render
+ * reflecting the final state.
+ *
  * No-op if the current transport does not carry binary frames (stdio);
- * returns -1 in that case. Otherwise 0 on success, -1 on render /
- * encode / emit failure. `quality` is clamped to [1, 100]; pass 0 to
- * use the MVP default (85). */
+ * returns -1 in that case. Otherwise 0 on success (including deferred
+ * cases), -1 on render / encode / emit failure. `quality` is clamped
+ * to [1, 100]; pass 0 to use the MVP default (85). */
 int server_render_push_jpeg_frame( Analysis *analy, int quality );
+
+/* Millisecond count until the rate limiter will accept the next push.
+ * Returns 0 if a push would fire immediately (either because no
+ * previous push has happened, or the cadence window has elapsed).
+ * Used by the RPC poll loop to scale its timeout so a deferred frame
+ * is drained promptly instead of sitting in the pending slot until
+ * the next command arrives. */
+int  server_render_ms_until_next_frame( void );
+
+/* If there's a deferred-push flag set and the cadence window has
+ * elapsed since the last successful push, render and push a fresh
+ * JPEG frame now. Returns 1 if a frame was emitted, 0 if nothing was
+ * pending or it is still too early, -1 on render/encode failure. Safe
+ * to call from the RPC idle-poll path. */
+int  server_render_flush_deferred_if_due( Analysis *analy );
 
 /* Return the next monotonic frame-sequence counter. Each successful
  * capture or inline-screenshot emission burns one seq; clients infer
