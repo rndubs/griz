@@ -32,6 +32,8 @@ APT_PACKAGES=(
     libmotif-dev
     libxt-dev
     libglw1-mesa-dev
+    libgl-dev
+    libglu1-mesa-dev
     libpng-dev
 )
 
@@ -153,6 +155,15 @@ EOF
 #endif
 EOF
 
+    # Griz headers expect GL headers at <GL/gl.h> and <GL/osmesa.h>
+    # (system path on TOSS). The vendored copy under Src/ext/Mesa/include
+    # drops the GL/ prefix, so the sandbox mirrors the flat files into a
+    # GL/ subdir of the stubs tree.
+    mkdir -p "$STUB_DIR/GL"
+    for h in gl.h glext.h glxext.h osmesa.h; do
+        cp "$ROOT/Src/ext/Mesa/include/$h" "$STUB_DIR/GL/$h"
+    done
+
     echo "stubs written: $STUB_DIR"
 }
 
@@ -181,6 +192,7 @@ do_check() {
         server_query.c
         server_events.c
         server_main.c
+        server_rpc.c
     )
 
     local failed=0

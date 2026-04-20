@@ -8,14 +8,14 @@
  * every decoded JSON frame straight to server_core_dispatch_line(),
  * which is the same dispatcher the stdio transport uses. Heartbeats
  * (kind=0x03) echo the client's 8-byte timestamp back so the client
- * can compute RTT. Binary kind (0x02) is not yet accepted from the
- * client; the render/frame-push pipeline (Phase 3) will drive it from
- * the server side.
+ * can compute RTT, and the server also emits its own heartbeats every
+ * 20 s of outbound idle (02-protocol.md §2.4). 60 s of inbound silence
+ * closes the connection with session_ending(reason="peer_idle").
+ * Binary kind (0x02) is not yet accepted from the client; the render /
+ * frame-push pipeline (Phase 3) will drive it from the server side.
  *
  * Post-MVP (tracked in planning/UI.md § Phase 2):
  *   - Three-thread split (command / render / I-O) with bounded queues.
- *   - 20 s heartbeat cadence and 60 s peer-idle detection.
- *   - SIGTERM handler with graceful flush.
  */
 
 #ifdef GRIZ_SERVER_BUILD
@@ -32,6 +32,7 @@
 #include <time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -61,16 +62,36 @@
 
 #define RPC_SESSION_ID_CHARS      8   /* "griz-XXXXXXXX" → 13 total */
 
+/* --- Keepalive timing (02-protocol.md §2.4) ----------------------- */
+#define RPC_HEARTBEAT_INTERVAL_MS (20 * 1000)  /* send every 20 s of outbound idle */
+#define RPC_PEER_IDLE_TIMEOUT_MS  (60 * 1000)  /* tear down after 60 s of inbound silence */
+#define RPC_POLL_TICK_MS          (1 * 1000)   /* wake up at least once a second so the
+                                                  signal handler and timers get serviced */
+
 /* --- Connection state --------------------------------------------- */
 
 typedef struct {
-    int  fd;                                /* connected client socket */
-    char token_b64[RPC_TOKEN_B64_LEN];      /* rendezvous token, NUL-terminated */
+    int       fd;                             /* connected client socket */
+    char      token_b64[RPC_TOKEN_B64_LEN];   /* rendezvous token, NUL-terminated */
+    long long last_inbound_ms;                /* monotonic ms of last received frame */
+    long long last_outbound_ms;               /* monotonic ms of last sent frame */
 } RpcContext;
 
 /* Module-level singleton so the signal handler can reach the socket. */
-static RpcContext g_rpc = { -1, { 0 } };
+static RpcContext g_rpc = { -1, { 0 }, 0, 0 };
 static volatile sig_atomic_t g_signal_term_pending = 0;
+
+/* Monotonic-clock milliseconds. Used for heartbeat and peer-idle
+ * bookkeeping; CLOCK_MONOTONIC is immune to wall-clock jumps. */
+static long long
+rpc_now_ms( void )
+{
+    struct timespec ts;
+    if ( clock_gettime( CLOCK_MONOTONIC, &ts ) != 0 )
+        return 0;
+    return (long long) ts.tv_sec * 1000LL
+         + (long long) ts.tv_nsec / 1000000LL;
+}
 
 /* --- Base64 (standard alphabet, no line wrap) --------------------- */
 
@@ -157,7 +178,9 @@ write_exact( int fd, const void *buf, size_t len )
     return 0;
 }
 
-/* Write one length-prefixed frame. Returns 0 on success. */
+/* Write one length-prefixed frame. On success, resets the outbound
+ * idle timer on g_rpc so the keepalive loop doesn't double-send a
+ * heartbeat on top of an otherwise busy link. Returns 0 on success. */
 static int
 rpc_write_frame( int fd, unsigned char kind, const void *payload, size_t len )
 {
@@ -175,6 +198,31 @@ rpc_write_frame( int fd, unsigned char kind, const void *payload, size_t len )
         return -1;
     if ( len > 0 && write_exact( fd, payload, len ) != 0 )
         return -1;
+
+    g_rpc.last_outbound_ms = rpc_now_ms();
+    return 0;
+}
+
+/* Wait up to `timeout_ms` for fd to become readable. Returns 1 if
+ * readable, 0 on timeout, -1 on error. EINTR is surfaced as 0 so the
+ * main loop's signal check can run. */
+static int
+rpc_poll_readable( int fd, int timeout_ms )
+{
+    struct pollfd pfd;
+    int rc;
+
+    pfd.fd      = fd;
+    pfd.events  = POLLIN;
+    pfd.revents = 0;
+
+    rc = poll( &pfd, 1, timeout_ms );
+    if ( rc < 0 )
+        return ( errno == EINTR ) ? 0 : -1;
+    if ( rc == 0 )
+        return 0;
+    if ( pfd.revents & ( POLLIN | POLLHUP | POLLERR ) )
+        return 1;
     return 0;
 }
 
@@ -539,7 +587,7 @@ process_server_mode_rpc( const char *db_path,
     int                 assigned_port;
     Analysis           *analy = NULL;
     int                 rc;
-    int                 clean_exit = 0;
+    int                 peer_idle_triggered = 0;
     int                 return_code = 0;
 
     if ( bind_host == NULL || bind_host[0] == '\0' )
@@ -662,16 +710,31 @@ process_server_mode_rpc( const char *db_path,
 
     g_rpc.fd = client_fd;
     memcpy( g_rpc.token_b64, token_b64, sizeof( token_b64 ) );
+    g_rpc.last_inbound_ms  = rpc_now_ms();
+    g_rpc.last_outbound_ms = g_rpc.last_inbound_ms;
 
     /* Install the framed emitter for all subsequent JSON output. */
     server_set_line_emitter( rpc_line_emitter, &g_rpc );
 
-    /* --- Handshake (token auth). --- */
+    /* --- Handshake (token auth). ---
+     * The client must send hello within RPC_PEER_IDLE_TIMEOUT_MS of
+     * TCP accept or we treat it as an idle peer and tear down. */
     {
         unsigned char *payload = NULL;
         size_t         len     = 0;
         unsigned char  kind    = 0;
         int            r;
+        int            pr;
+
+        pr = rpc_poll_readable( client_fd, RPC_PEER_IDLE_TIMEOUT_MS );
+        if ( pr <= 0 )
+        {
+            if ( pr == 0 )
+                server_emit_error( NULL, "protocol_mismatch",
+                                   "hello not received within idle timeout" );
+            return_code = 1;
+            goto cleanup;
+        }
 
         r = rpc_read_frame( client_fd, &kind, &payload, &len );
         if ( r != 0 || kind != RPC_FRAME_KIND_JSON )
@@ -682,6 +745,7 @@ process_server_mode_rpc( const char *db_path,
             return_code = 1;
             goto cleanup;
         }
+        g_rpc.last_inbound_ms = rpc_now_ms();
         r = rpc_handshake( &g_rpc, payload, len );
         free( payload );
         if ( r != 0 )
@@ -702,19 +766,78 @@ process_server_mode_rpc( const char *db_path,
     }
     server_emit_ready();
 
-    /* --- Dispatch loop. --- */
+    /* --- Dispatch loop. ---
+     * Each iteration:
+     *   1. Emit a kind=0x03 heartbeat if we've been outbound-idle for
+     *      RPC_HEARTBEAT_INTERVAL_MS. rpc_write_frame() resets
+     *      last_outbound_ms, so a busy link never double-sends.
+     *   2. poll() with a timeout scaled to the nearest upcoming timer
+     *      event (or RPC_POLL_TICK_MS, whichever is smaller) so the
+     *      signal handler gets a prompt chance to tear down.
+     *   3. If poll() returns readable, drain a frame — this also
+     *      refreshes last_inbound_ms. Queued heartbeats that arrived
+     *      during a long command dispatch are drained here before the
+     *      peer_idle check fires.
+     *   4. Only on a pure poll() timeout with no bytes available do we
+     *      declare session_ending(peer_idle); that avoids a spurious
+     *      peer_idle when the socket buffer is non-empty but the loop
+     *      was busy processing a long-running command.
+     */
     while ( !g_signal_term_pending )
     {
         unsigned char *payload = NULL;
         size_t         len     = 0;
         unsigned char  kind    = 0;
         int            r;
+        int            pr;
+        long long      now_ms;
+        long long      outbound_idle;
+        long long      inbound_remaining;
+        long long      outbound_remaining;
+        int            timeout_ms;
+
+        now_ms        = rpc_now_ms();
+        outbound_idle = now_ms - g_rpc.last_outbound_ms;
+
+        if ( outbound_idle >= RPC_HEARTBEAT_INTERVAL_MS )
+        {
+            (void) rpc_write_frame( client_fd, RPC_FRAME_KIND_HEARTBEAT,
+                                    NULL, 0 );
+            now_ms        = rpc_now_ms();
+            outbound_idle = 0;
+        }
+
+        outbound_remaining = RPC_HEARTBEAT_INTERVAL_MS - outbound_idle;
+        inbound_remaining  = RPC_PEER_IDLE_TIMEOUT_MS
+                             - ( now_ms - g_rpc.last_inbound_ms );
+        if ( inbound_remaining < 0 )  inbound_remaining  = 0;
+        if ( outbound_remaining < 0 ) outbound_remaining = 0;
+
+        timeout_ms = (int) ( ( outbound_remaining < inbound_remaining )
+                             ? outbound_remaining : inbound_remaining );
+        if ( timeout_ms > RPC_POLL_TICK_MS ) timeout_ms = RPC_POLL_TICK_MS;
+        if ( timeout_ms < 0 )                timeout_ms = 0;
+
+        pr = rpc_poll_readable( client_fd, timeout_ms );
+        if ( pr < 0 )
+            break;
+        if ( pr == 0 )
+        {
+            /* Pure timeout: only now do we check peer_idle, since any
+             * queued inbound bytes would have made poll return readable. */
+            if ( rpc_now_ms() - g_rpc.last_inbound_ms
+                 >= RPC_PEER_IDLE_TIMEOUT_MS )
+            {
+                peer_idle_triggered = 1;
+                break;
+            }
+            continue;
+        }
 
         r = rpc_read_frame( client_fd, &kind, &payload, &len );
         if ( r == 1 )  /* clean peer close */
         {
             free( payload );
-            clean_exit = 1;
             break;
         }
         if ( r != 0 )
@@ -722,6 +845,8 @@ process_server_mode_rpc( const char *db_path,
             free( payload );
             break;
         }
+
+        g_rpc.last_inbound_ms = rpc_now_ms();
 
         if ( kind == RPC_FRAME_KIND_HEARTBEAT )
         {
@@ -742,7 +867,6 @@ process_server_mode_rpc( const char *db_path,
         if ( server_core_dispatch_line( (const char *) payload, analy ) == 1 )
         {
             free( payload );
-            clean_exit = 1;
             break;
         }
         free( payload );
@@ -752,10 +876,12 @@ process_server_mode_rpc( const char *db_path,
     {
         rpc_emit_session_ending( "signal_term", 0 );
     }
-    else if ( !clean_exit )
+    else if ( peer_idle_triggered )
     {
         rpc_emit_session_ending( "peer_idle", 0 );
     }
+    /* Transport errors / clean peer close: no session_ending — the
+     * socket is already unreliable or the client went away cleanly. */
 
     server_core_history_cleanup( analy );
 

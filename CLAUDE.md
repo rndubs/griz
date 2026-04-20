@@ -27,7 +27,7 @@ Both transports share `server_core_dispatch_line()` in `Src/server_core.c`. All 
 | `Src/server_core.{c,h}` | JSON envelope, output capture, error recording, emitter hook, `server_core_dispatch_line`. |
 | `Src/server_core_startup.{c,h}` | Analysis / OSMesa / DB open — shared by both transports. |
 | `Src/server_stdio.c` | Thin `fgets` loop → `server_core_dispatch_line`. |
-| `Src/server_rpc.{c,h}` | `bind → rendezvous (0600 JSON) → accept → token hello → dispatch`. Single-threaded v0; heartbeats echoed but not proactively sent. SIGTERM/SIGINT → `session_ending(signal_term)` + socket shutdown. |
+| `Src/server_rpc.{c,h}` | `bind → rendezvous (0600 JSON) → accept → token hello → dispatch`. Single-threaded v0. Dispatch loop drives 20 s heartbeat cadence + 60 s peer-idle detection via `poll()` with a scaled timeout; peer-idle check fires only on a pure poll timeout so queued heartbeats drain first. SIGTERM/SIGINT → `session_ending(signal_term)` + socket shutdown. |
 | `Src/server_query.{c,h}` | `q_*` builders (state/view/time/materials/results/selection/render/database). |
 | `Src/server_events.{c,h}` | `state_changed` emitter with monotonic `state_seq`. |
 
@@ -42,7 +42,24 @@ Server objects linked via `SERVER_OBJS` in `Src/Makefile.Library` — add new TU
 `$HOME/.griz/rendezvous/<session-id>.json` (mode 0600, atomic rename), contents:
 `{version, session_id: "griz-<8 hex>", host, port, token: <32 bytes base64>, server_pid, started_at}`. The client must present `token` in its first hello frame; the server does a constant-time compare. The file is deleted on clean exit.
 
-## Build
+### RPC Python client
+
+`pygriz/src/griz/rpc_worker.py` is the reference client for
+`--transport=rpc`. Public API is drop-in compatible with
+`griz.worker.Worker` (same `cmd()` / `cleanup()` / `server_info` /
+`send_command()`), so `Griz(worker_factory=RpcWorker)` works without
+any changes in `griz.session`. Spawn flow: launch the server with
+`--rendezvous=<tempfile>`, poll for the file, TCP connect, send
+`hello` carrying the token, then consume `hello_ack` + `ready` before
+returning.
+
+### RPC envelope-parity gate
+
+`pygriz_mcp/tests/test_smoke_rpc.py` mirrors `test_smoke.py` case-for-
+case but swaps the session factory to use `RpcWorker`. Any test that
+passes on stdio and fails on RPC (or vice versa) is a sign that a
+transport has grown envelope-specific behavior — fix that in the
+shared core, not in one transport.
 
 ## Build
 
@@ -73,10 +90,18 @@ autoconf probe hard-codes `/usr/lib64`, `/usr/lib`, `/usr/X11R6/lib` for the
 OSMesa search and the Mili build check requires a real libmili.a with current
 symbols — neither resolves on multiarch (`/usr/lib/x86_64-linux-gnu`) or
 stub-library setups. A full `batch_opt` / `server_opt` link cannot be produced
-in such environments. For structural/syntax validation, compile the RPC TUs in
-isolation with minimal header stubs — see the stub pattern used during the
-Phase 2 RPC work (not checked in; reconstruct from `Src/server_core.h` if
-needed).
+in such environments.
+
+For **structural/syntax validation** of the server TUs, run
+`./sandbox.sh all` (install → stubs → `gcc -fsyntax-only`). The stubs
+step writes Mili/GAHL/griz_config stubs plus a `GL/` subdir that
+re-exports the vendored Mesa headers (`Src/ext/Mesa/include/*.h`) at
+the `<GL/xxx.h>` paths Griz expects. The check step runs
+`gcc -fsyntax-only` against every shipped server TU, so regressions
+in includes/typing land before CI. Required Debian packages beyond
+those in `APT_PACKAGES` are `libglu1-mesa-dev` + `libgl-dev` (pulls
+in `/usr/include/GL/glu.h`). Keep the `FILES=` list in `sandbox.sh`
+in sync when you add a new server TU.
 
 ## Python
 
