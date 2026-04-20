@@ -86,6 +86,8 @@ void SessionState::applyTime(const QJsonObject &obj) {
     m_time.stateMin  = obj.value(QStringLiteral("state_min")).toInt(m_time.stateMin);
     m_time.stateMax  = obj.value(QStringLiteral("state_max")).toInt(m_time.stateMax);
     m_time.time      = obj.value(QStringLiteral("time")).toDouble(m_time.time);
+    m_time.timeMin   = obj.value(QStringLiteral("time_min")).toDouble(m_time.timeMin);
+    m_time.timeMax   = obj.value(QStringLiteral("time_max")).toDouble(m_time.timeMax);
     m_time.animating = obj.value(QStringLiteral("animating")).toBool(m_time.animating);
 }
 
@@ -163,6 +165,28 @@ void SessionState::applyMaterials(const QJsonObject &obj) {
 
 void SessionState::applyResults(const QJsonObject &obj) {
     if (obj.isEmpty()) return;
+
+    // Catalog: q_results emits `results` as a flat array of
+    // {name, title, origin}. The `results.available` schema from
+    // planning/shared/query-commands.md §results is not live yet — the
+    // server splits primary/component server-side in a later phase.
+    const QJsonArray catalog = obj.value(QStringLiteral("results")).toArray();
+    m_results.available.clear();
+    m_results.available.reserve(catalog.size());
+    for (const QJsonValue &v : catalog) {
+        const QJsonObject entry = v.toObject();
+        ResultItem item;
+        item.name   = entry.value(QStringLiteral("name")).toString();
+        item.title  = entry.value(QStringLiteral("title")).toString();
+        item.origin = entry.value(QStringLiteral("origin")).toString();
+        if (!item.name.isEmpty()) {
+            m_results.available.push_back(item);
+        }
+    }
+
+    const QJsonObject current = obj.value(QStringLiteral("current")).toObject();
+    m_results.currentName = current.value(QStringLiteral("name")).toString();
+
     const QJsonObject active = obj.value(QStringLiteral("active")).toObject();
     if (!active.isEmpty()) {
         m_results.primary   = active.value(QStringLiteral("field")).toString(m_results.primary);
@@ -172,7 +196,12 @@ void SessionState::applyResults(const QJsonObject &obj) {
         m_results.max       = active.value(QStringLiteral("max")).toDouble(m_results.max);
         m_results.hasActive = true;
     } else {
-        m_results.hasActive = false;
+        m_results.hasActive = !m_results.currentName.isEmpty();
+        if (m_results.hasActive) {
+            m_results.primary   = m_results.currentName;
+            m_results.component = current.value(QStringLiteral("title")).toString();
+            m_results.grizName  = m_results.currentName;
+        }
     }
 }
 
@@ -183,12 +212,17 @@ void SessionState::applySelection(const QJsonObject &obj) {
     const QJsonArray picked = obj.value(QStringLiteral("picked")).toArray();
     for (const QJsonValue &v : picked) {
         const QJsonObject entry = v.toObject();
-        const QString kind = entry.value(QStringLiteral("kind")).toString();
-        const int id = entry.value(QStringLiteral("id")).toInt(0);
-        if (kind == QLatin1String("node")) {
-            m_selection.nodes.push_back(id);
-        } else if (kind == QLatin1String("element")) {
-            m_selection.elements.push_back(id);
+        PickedItem item;
+        item.kind = entry.value(QStringLiteral("kind")).toString();
+        item.id   = entry.value(QStringLiteral("id")).toInt(0);
+        if (item.kind == QLatin1String("node")) {
+            m_selection.nodes.push_back(item);
+        } else if (!item.kind.isEmpty()) {
+            // Everything that isn't a node class counts as an element for
+            // the dock's elements bucket — the server's `kind` is already
+            // the class short name (brick/hex/quad/…) we can hand back
+            // to `hilite <kind> <id>`.
+            m_selection.elements.push_back(item);
         }
     }
     m_selection.hasHighlighted =

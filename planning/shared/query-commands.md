@@ -97,6 +97,8 @@ The canonical state dict. A `q_state` response carries the whole object. A parti
     "state_min": 1,
     "state_max": 201,
     "time": 0.00420,
+    "time_min": 0.00000,
+    "time_max": 0.02010,
     "animating": false
   },
 

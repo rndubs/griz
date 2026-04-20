@@ -43,6 +43,10 @@ void Console::appendOutput(const QString &text) {
     m_output->appendPlainText(text);
 }
 
+void Console::clearOutput() {
+    if (m_output) m_output->clear();
+}
+
 void Console::onReturnPressed() {
     const QString cmd = m_prompt->text().trimmed();
     m_prompt->clear();

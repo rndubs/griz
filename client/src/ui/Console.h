@@ -21,6 +21,7 @@ public:
 public slots:
     void execute(const QString &cmd);
     void appendOutput(const QString &text);
+    void clearOutput();
 
 signals:
     void commandEntered(QString cmd);

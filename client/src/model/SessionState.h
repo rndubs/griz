@@ -24,6 +24,8 @@ struct TimeState {
     int    stateMin  = 0;
     int    stateMax  = 0;
     double time      = 0.0;
+    double timeMin   = 0.0;
+    double timeMax   = 0.0;
     bool   animating = false;
 };
 
@@ -56,6 +58,16 @@ struct Material {
     bool    hasColor = false;
 };
 
+// One result entry from q_state.results.results[] (and q_results).
+// Matches server_query.c::build_q_results output: flat name + title +
+// origin, where origin is "primal" | "derived". No primary/component
+// split on the wire today — that's a post-MVP schema refinement.
+struct ResultItem {
+    QString name;     // wire token for `show <name>`
+    QString title;    // human-readable label for the combo
+    QString origin;   // "primal" or "derived"
+};
+
 struct ResultsState {
     QString primary;       // active.field
     QString component;     // active.component
@@ -63,12 +75,26 @@ struct ResultsState {
     double  min = 0.0;
     double  max = 0.0;
     bool    hasActive = false;
+
+    // Full catalog for the picker UI. Populated from q_state.results.results.
+    std::vector<ResultItem> available;
+    // Current active result name (from q_state.results.current.name) —
+    // used to preselect the combo. Empty when no result is active.
+    QString currentName;
+};
+
+// One entry in q_selection.picked — the server's short class name (e.g.
+// "node", "brick", "hex", "quad") plus its user-facing id. Kept around
+// so SelectionDock can issue `hilite <kind> <id>` without another query.
+struct PickedItem {
+    QString kind;
+    int     id = 0;
 };
 
 struct Selection {
-    std::vector<int> elements;
-    std::vector<int> nodes;
-    bool             hasHighlighted = false;
+    std::vector<PickedItem> elements;
+    std::vector<PickedItem> nodes;
+    bool                    hasHighlighted = false;
 };
 
 class SessionState : public QObject {

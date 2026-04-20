@@ -16,6 +16,8 @@
 //   * wheel                  → zf / zb (zoom)            [×1.1 per notch]
 //   * left click (no drag)   → pick_at <x> <y>
 //   * R key                  → rview
+//   * P key                  → switch persp / switch ortho (local toggle)
+//   * 1 / 2 / 3              → preset views (front / right / top)
 //
 // Rate limiting: one command in flight at a time. Mouse-move deltas accumulate
 // into a pending vector until the previous command's response arrives; the
@@ -72,6 +74,12 @@ private:
 
     // Request id of the outstanding command (empty == idle).
     QString m_inflightId;
+
+    // Local toggle state for P (projection). The server has no idempotent
+    // "toggle projection" command — it exposes `switch persp` / `switch
+    // ortho` as setters — so we flip a client-side bool each press.
+    // Initial state matches the server default (perspective).
+    bool m_orthoActive = false;
 };
 
 } // namespace griz::commands

@@ -74,17 +74,37 @@ App::App(QObject *parent) : QObject(parent) {
             this, [this]() {
         m_mainWindow->materialsDock()->setMaterials(m_sessionState->materials());
     });
+    connect(m_mainWindow->materialsDock(), &ui::MaterialsDock::commandRequested,
+            this, [this](const QString &cmd) {
+        if (!m_worker->isConnected()) return;
+        m_worker->sendCommand(cmd);
+    });
     connect(m_sessionState, &model::SessionState::timeChanged,
             m_mainWindow->timeSlider(), &ui::TimeSlider::setTime);
     connect(m_sessionState, &model::SessionState::resultsChanged,
             m_mainWindow->resultsDock(), &ui::ResultsDock::setResults);
+    connect(m_mainWindow->resultsDock(), &ui::ResultsDock::commandRequested,
+            this, [this](const QString &cmd) {
+        if (!m_worker->isConnected()) return;
+        m_worker->sendCommand(cmd);
+    });
     connect(m_sessionState, &model::SessionState::selectionChanged,
             m_mainWindow->selectionDock(), &ui::SelectionDock::setSelection);
+    connect(m_mainWindow->selectionDock(), &ui::SelectionDock::commandRequested,
+            this, [this](const QString &cmd) {
+        if (!m_worker->isConnected()) return;
+        m_worker->sendCommand(cmd);
+    });
 
     connect(m_mainWindow->timeSlider(), &ui::TimeSlider::stateRequested,
             this, [this](int state) {
         if (!m_worker->isConnected()) return;
         m_worker->sendCommand(QStringLiteral("state %1").arg(state));
+    });
+    connect(m_mainWindow->timeSlider(), &ui::TimeSlider::commandRequested,
+            this, [this](const QString &cmd) {
+        if (!m_worker->isConnected()) return;
+        m_worker->sendCommand(cmd);
     });
     connect(m_sessionState, &model::SessionState::databaseChanged,
             this, [this](const model::DatabaseInfo &db) {
@@ -209,7 +229,13 @@ void App::onWorkerConnected() {
 }
 
 void App::onWorkerDisconnected(const QString &reason) {
-    m_mainWindow->setConnectionStatus(tr("disconnected"));
+    // Clean quits (user closed the window) use the muted setter; surprise
+    // drops flash red to grab attention.
+    if (m_shuttingDown) {
+        m_mainWindow->setConnectionStatus(tr("disconnected"));
+    } else {
+        m_mainWindow->flashDisconnect(tr("disconnected"));
+    }
     m_mainWindow->console()->appendOutput(
         tr("[disconnected] %1").arg(reason));
 

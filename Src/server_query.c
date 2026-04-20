@@ -48,6 +48,7 @@ build_q_time( Analysis *analy )
     cJSON *data = cJSON_CreateObject();
     int    max_state = analy->state_count > 0 ? analy->state_count - 1 : 0;
     double time_value     = 0.0;
+    double min_time_value = 0.0;
     double max_time_value = 0.0;
 
     if ( analy->state_times != NULL && analy->state_count > 0 )
@@ -56,6 +57,7 @@ build_q_time( Analysis *analy )
         if ( cur < 0 )                      cur = 0;
         if ( cur >= analy->state_count )    cur = analy->state_count - 1;
         time_value     = analy->state_times[cur];
+        min_time_value = analy->state_times[0];
         max_time_value = analy->state_times[analy->state_count - 1];
     }
 
@@ -72,6 +74,8 @@ build_q_time( Analysis *analy )
     cJSON_AddNumberToObject( data, "state_min", 1 );
     cJSON_AddNumberToObject( data, "state_max", analy->state_count );
     cJSON_AddNumberToObject( data, "time",      time_value );
+    cJSON_AddNumberToObject( data, "time_min",  min_time_value );
+    cJSON_AddNumberToObject( data, "time_max",  max_time_value );
     cJSON_AddBoolToObject(   data, "animating", env.animate_active );
 
     return data;

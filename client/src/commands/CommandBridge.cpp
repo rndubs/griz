@@ -99,9 +99,34 @@ bool CommandBridge::eventFilter(QObject *watched, QEvent *event) {
     }
     case QEvent::KeyPress: {
         auto *ke = static_cast<QKeyEvent *>(event);
-        if (ke->key() == Qt::Key_R && !(ke->modifiers() & Qt::ControlModifier)) {
+        const bool plain = !(ke->modifiers()
+            & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier));
+        if (!plain) break;
+        switch (ke->key()) {
+        case Qt::Key_R:
             trySend(QStringLiteral("rview"));
             return true;
+        case Qt::Key_P:
+            m_orthoActive = !m_orthoActive;
+            trySend(m_orthoActive
+                ? QStringLiteral("switch ortho")
+                : QStringLiteral("switch persp"));
+            return true;
+        case Qt::Key_1:
+            // Front view: reset to the model's default orientation.
+            trySend(QStringLiteral("rview"));
+            return true;
+        case Qt::Key_2:
+            // Right side: reset + yaw 90° around Y. Compound ';' command
+            // is dispatched by parse_command() as two sequential steps.
+            trySend(QStringLiteral("rview; ry 90"));
+            return true;
+        case Qt::Key_3:
+            // Top-down: reset + pitch -90° around X so +Y points into screen.
+            trySend(QStringLiteral("rview; rx -90"));
+            return true;
+        default:
+            break;
         }
         break;
     }
