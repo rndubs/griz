@@ -9,7 +9,13 @@ The top-level checklist lives in `## 0. Implementation Status` at lines 1–84 o
 
 ## UI Implementation
 
-Planning checklist lives in `## 0. MVP Implementation Tracker` at lines 1–76 of `./planning/UI.md` — read just that range to check/update status. Update it after landing UI work.
+Planning checklist lives in `## 0. MVP Implementation Tracker` at lines 1–88 of `./planning/UI.md` — read just that range to check/update status. Update it after landing UI work.
+
+### Qt client (`client/`)
+
+Sibling tree to `Src/`; separate CMake build, no autoconf. MVP targets **Qt 5.15** because TOSS login nodes don't ship Qt 6 — see the Phase 5 preamble in `planning/UI.md` for the Qt 5→6 port plan. Layout: `client/src/{main.cpp,App.*,net/,model/,ui/}` with one static-library CMake target per subtree (`griz-client-net`, `griz-client-model`, `griz-client-ui`) rolled up into the `griz-client` executable.
+
+Build driver: `./build_client.sh [release|debug] [-- <cmake args>]` at the repo root. Requires `cmake >= 3.16` (default TOSS `cmake/3.23.1` works; `module load cmake/3.26.3` is fine) and Qt 5.15 system headers (already present at `/usr/include/qt5`). Output: `client/build/linux-<type>/src/griz-client`.
 
 ### Server transports
 
