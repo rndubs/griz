@@ -679,4 +679,88 @@ server_render_resize_viewport( int w, int h )
     return 0;
 }
 
+/* --------------------------------------------------------------------
+ * Picking — ID-buffer render pass + single-pixel readback.
+ * planning/ui-design/06-picking-and-queries.md §3.1, §10 step 2.
+ * ------------------------------------------------------------------ */
+
+int
+server_render_pick_at( Analysis *analy, int x, int y,
+                       unsigned char rgba[4] )
+{
+    int w;
+    int h;
+    int gl_y;
+    GLfloat saved_clear[4];
+
+    if ( analy == NULL || rgba == NULL )
+        return -1;
+
+    rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0;
+
+    if ( v_win == NULL )
+        return -1;
+
+    w = v_win->vp_width;
+    h = v_win->vp_height;
+    if ( w <= 0 || h <= 0 )
+        return -1;
+
+    /* Out-of-viewport click: synthesise a miss without doing the render. */
+    if ( x < 0 || y < 0 || x >= w || y >= h )
+        return 0;
+
+    /* Save the subset of GL state we're about to override. GL_COLOR_BUFFER_BIT
+     * covers clear color + blend enable; GL_ENABLE_BIT covers the remaining
+     * toggles (lighting, dither, smoothing, texturing). glPushAttrib itself
+     * does not save glClearColor's components but GL_COLOR_BUFFER_BIT
+     * includes it per spec. */
+    glGetFloatv( GL_COLOR_CLEAR_VALUE, saved_clear );
+    glPushAttrib( GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT
+                | GL_POINT_BIT  | GL_LINE_BIT
+                | GL_POLYGON_BIT );
+
+    glDisable( GL_LIGHTING );
+    glDisable( GL_BLEND );
+    glDisable( GL_DITHER );
+    glDisable( GL_POINT_SMOOTH );
+    glDisable( GL_LINE_SMOOTH );
+    glDisable( GL_POLYGON_SMOOTH );
+    glDisable( GL_TEXTURE_1D );
+    glDisable( GL_TEXTURE_2D );
+
+    /* Clear to all zeros so the miss-sentinel decodes cleanly. */
+    glClearColor( 0.0f, 0.0f, 0.0f, 0.0f );
+
+    griz_set_draw_ids_mode( 1 );
+    if ( analy->update_display != NULL )
+        analy->update_display( analy );
+    glFinish();
+    griz_set_draw_ids_mode( 0 );
+
+    /* OSMesa's default read buffer may be GL_BACK, but this context is
+     * single-buffered (OSMesaCreateContext allocates a single RGBA
+     * buffer). screen_to_memory in draw.c already selects GL_FRONT for
+     * the offscreen case; mirror that so the same pixels we'd put into
+     * a screenshot are the ones the pick decoder sees. */
+    glReadBuffer( GL_FRONT );
+
+    /* Client sends top-left coords (matches the JPEG / PNG frames we push);
+     * OpenGL's glReadPixels is bottom-left. */
+    gl_y = ( h - 1 ) - y;
+    glReadPixels( x, gl_y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba );
+
+    glPopAttrib();
+    glClearColor( saved_clear[0], saved_clear[1],
+                  saved_clear[2], saved_clear[3] );
+
+    /* Render once in normal mode so subsequent captures (auto-push JPEG
+     * frame, inline screenshot) show the scene the user expects —
+     * potentially with a new hilite applied by the pick handler. */
+    if ( analy->update_display != NULL )
+        analy->update_display( analy );
+
+    return 0;
+}
+
 #endif /* GRIZ_SERVER_BUILD */

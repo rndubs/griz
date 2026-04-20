@@ -228,6 +228,60 @@ static Bool_type colorflag=FALSE;
 /* Particle radius. */
 static GLdouble particle_radius = 0.025;
 
+/* Picking (ID-buffer) draw mode.
+ * planning/ui-design/06-picking-and-queries.md §3.1 MVP. */
+static int g_draw_ids_mode = 0;
+
+void
+griz_set_draw_ids_mode( int enabled )
+{
+    g_draw_ids_mode = enabled ? 1 : 0;
+}
+
+int
+griz_draw_ids_mode_active( void )
+{
+    return g_draw_ids_mode;
+}
+
+/* Transparent materials are skipped in the ID buffer per
+ * planning/ui-design/06-picking-and-queries.md §3.3. */
+static int
+griz_material_is_transparent( int matl )
+{
+    if ( v_win == NULL )
+        return 0;
+    if ( matl < 0 || matl >= v_win->mesh_materials.property_array_size )
+        return 0;
+    return v_win->mesh_materials.diffuse[matl][3] < 0.999f;
+}
+
+/* Draw a single primitive directly with a packed (id, class_tag) colour,
+ * bypassing draw_poly() / scan_poly() / the wireframe & reflection
+ * paths. draw_plain_poly() issues glColor3fv per vertex which clobbers
+ * alpha back to 1.0 — fatal for our class-tag-in-alpha encoding. The
+ * ID pass doesn't need lighting, edges, reflections, or interpolation,
+ * so shortcut straight to a flat-coloured glBegin/glEnd.
+ *
+ * id_zero_based is the internal index. id+1 lands in RGB (24-bit id
+ * space, §3.1); class_tag is one of GRIZ_ID_TAG_* (0 reserved for miss). */
+static void
+griz_draw_id_primitive( int cnt, float verts[][3],
+                        int id_zero_based, unsigned char class_tag )
+{
+    unsigned int id = (unsigned int) ( id_zero_based + 1 );
+    float r = (float) ( ( id >> 16 ) & 0xFFu ) / 255.0f;
+    float g = (float) ( ( id >>  8 ) & 0xFFu ) / 255.0f;
+    float b = (float) (   id         & 0xFFu ) / 255.0f;
+    float a = (float) class_tag / 255.0f;
+    int i;
+    glColor4f( r, g, b, a );
+    glBegin( GL_POLYGON );
+    for ( i = 0; i < cnt; i++ )
+        glVertex3fv( verts[i] );
+    glEnd();
+}
+
 /* Vector lengths in pixels for drawing vector plots. */
 #define VEC_2D_LENGTH 20.0
 #define VEC_3D_LENGTH 100.0
@@ -5035,6 +5089,14 @@ draw_hexs( Bool_type show_node_result, Bool_type show_mat_result,
             }
         }
 
+        if ( g_draw_ids_mode )
+        {
+            if ( griz_material_is_transparent( matl ) )
+                continue;
+            griz_draw_id_primitive( cnt, verts, el, GRIZ_ID_TAG_HEX );
+            continue;
+        }
+
         if(analy->mesh_view_mode == RENDER_WIREFRAMETRANS)
         {
             draw_edges_3d(analy);
@@ -5316,6 +5378,15 @@ draw_tets( Bool_type show_node_result, Bool_type show_mat_result,
         }
 
         hidden_poly = hide_by_object_type( p_tet_class, matl, el, analy, data_array );
+
+        if ( g_draw_ids_mode )
+        {
+            if ( griz_material_is_transparent( matl ) )
+                continue;
+            griz_draw_id_primitive( cnt, verts, el, GRIZ_ID_TAG_TET );
+            continue;
+        }
+
         draw_poly( cnt, verts, norms, cols, res, matl, p_mesh, analy, hidden_poly );
     }
 
@@ -5572,6 +5643,14 @@ draw_quads_3d( Bool_type show_node_result, Bool_type show_mat_result,
         }
 
         hidden_poly = hide_by_object_type( p_quad_class, matl, i, analy, data_array );
+
+        if ( g_draw_ids_mode )
+        {
+            if ( griz_material_is_transparent( matl ) )
+                continue;
+            griz_draw_id_primitive( cnt, verts, i, GRIZ_ID_TAG_QUAD );
+            continue;
+        }
 
         if(analy->mesh_view_mode == RENDER_WIREFRAMETRANS)
         {
@@ -5832,6 +5911,15 @@ draw_tris_3d( Bool_type show_node_result, Bool_type show_mat_result,
         }
 
         hidden_poly = FALSE;
+
+        if ( g_draw_ids_mode )
+        {
+            if ( griz_material_is_transparent( matl ) )
+                continue;
+            griz_draw_id_primitive( cnt, verts, i, GRIZ_ID_TAG_TRI );
+            continue;
+        }
+
         draw_poly( cnt, verts, norms, cols, res, matl, p_mesh, analy, hidden_poly );
     }
 
@@ -7811,7 +7899,11 @@ draw_nodes_2d_3d( MO_class_data *p_node_class, Analysis *analy )
         coords3 = analy->state_p->nodes.nodes3d;
         if ( analy->point_diam>0.0 )
         {
-            glEnable( GL_POINT_SMOOTH );
+            /* Point smoothing produces antialiased alpha fringes that
+             * would corrupt our ID-in-alpha encoding during a pick
+             * pass — keep it off in that mode. */
+            if ( !g_draw_ids_mode )
+                glEnable( GL_POINT_SMOOTH );
             glPointSize( analy->point_diam );
         }
 
@@ -7822,17 +7914,28 @@ draw_nodes_2d_3d( MO_class_data *p_node_class, Analysis *analy )
             for ( j = 0; j < 3; j++ )
                 pt[j] = coords3[i][j];
 
-            if ( no_result )
+            if ( g_draw_ids_mode )
             {
-                /* No result, color by background color */
-                VEC_COPY( col, v_win->foregrnd_color );
+                unsigned int id = (unsigned int) ( i + 1 );
+                glColor4f( (float)( ( id >> 16 ) & 0xFFu ) / 255.0f,
+                           (float)( ( id >>  8 ) & 0xFFu ) / 255.0f,
+                           (float)(   id         & 0xFFu ) / 255.0f,
+                           (float) GRIZ_ID_TAG_NODE        / 255.0f );
             }
             else
-                color_lookup( col, nodal_data[i], analy->result_mm[0],
-                              analy->result_mm[1], analy->zero_result, -1,
-                              analy->logscale, analy->material_greyscale );
+            {
+                if ( no_result )
+                {
+                    /* No result, color by background color */
+                    VEC_COPY( col, v_win->foregrnd_color );
+                }
+                else
+                    color_lookup( col, nodal_data[i], analy->result_mm[0],
+                                  analy->result_mm[1], analy->zero_result, -1,
+                                  analy->logscale, analy->material_greyscale );
 
-            glColor3fv( col );
+                glColor3fv( col );
+            }
             glVertex3fv( pt );
         }
 
@@ -7849,16 +7952,27 @@ draw_nodes_2d_3d( MO_class_data *p_node_class, Analysis *analy )
             for ( j = 0; j < 2; j++ )
                 pt[j] = coords2[i][j];
 
-            if ( no_result )
+            if ( g_draw_ids_mode )
             {
-                VEC_COPY( col, v_win->foregrnd_color );
+                unsigned int id = (unsigned int) ( i + 1 );
+                glColor4f( (float)( ( id >> 16 ) & 0xFFu ) / 255.0f,
+                           (float)( ( id >>  8 ) & 0xFFu ) / 255.0f,
+                           (float)(   id         & 0xFFu ) / 255.0f,
+                           (float) GRIZ_ID_TAG_NODE        / 255.0f );
             }
             else
-                color_lookup( col, nodal_data[i], analy->result_mm[0],
-                              analy->result_mm[1], analy->zero_result, -1,
-                              analy->logscale, analy->material_greyscale );
+            {
+                if ( no_result )
+                {
+                    VEC_COPY( col, v_win->foregrnd_color );
+                }
+                else
+                    color_lookup( col, nodal_data[i], analy->result_mm[0],
+                                  analy->result_mm[1], analy->zero_result, -1,
+                                  analy->logscale, analy->material_greyscale );
 
-            glColor3fv( col );
+                glColor3fv( col );
+            }
             glVertex2fv( pt );
         }
 

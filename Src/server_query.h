@@ -37,6 +37,13 @@ void *build_q_selection_data( Analysis *analy );
 void *build_q_render_data(    Analysis *analy );
 void *build_q_database_data(  Analysis *analy );
 
+/* `id` is the user-facing label (1-based, or labels-table alias) —
+ * matches what clients see from q_selection / pick_at responses. Both
+ * return NULL when the id doesn't resolve to a node / element, so the
+ * dispatcher can surface `not_found`. */
+void *build_q_node_data(      Analysis *analy, int id );
+void *build_q_element_data(   Analysis *analy, int id );
+
 #endif /* GRIZ_SERVER_BUILD */
 
 #endif /* SERVER_QUERY_H */

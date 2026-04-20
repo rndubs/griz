@@ -16,6 +16,9 @@
 #include <sys/stat.h>
 
 #include "cJSON.h"
+#include "viewer.h"
+#include "mesh.h"
+#include "draw.h"
 #include "server_core.h"
 #include "server_events.h"
 #include "server_query.h"
@@ -854,6 +857,243 @@ server_try_resize( ServerRequest *req, Analysis *analy )
     return 1;
 }
 
+/* Map a GRIZ_ID_TAG_* packed in the pick-pixel alpha channel to the
+ * Mili superclass we should look up in the mesh's class table. Returns
+ * -1 on an unknown tag (the dispatcher treats that as a miss). */
+static int
+pick_tag_to_superclass( unsigned char tag )
+{
+    switch ( tag )
+    {
+        case GRIZ_ID_TAG_NODE: return G_NODE;
+        case GRIZ_ID_TAG_HEX:  return G_HEX;
+        case GRIZ_ID_TAG_TET:  return G_TET;
+        case GRIZ_ID_TAG_QUAD: return G_QUAD;
+        case GRIZ_ID_TAG_TRI:  return G_TRI;
+        default:               return -1;
+    }
+}
+
+/* Return the first MO_class_data of the given superclass within the
+ * current mesh. Multi-class meshes pick from the first class — a
+ * limitation documented under 06 §11 (multi-mesh / multi-class is
+ * deferred past MVP). */
+static MO_class_data *
+pick_class_for_superclass( Analysis *analy, int superclass )
+{
+    Mesh_data *mesh;
+    List_head *lh;
+
+    if ( analy == NULL || analy->mesh_table == NULL
+         || analy->mesh_qty <= 0 )
+        return NULL;
+
+    mesh = &analy->mesh_table[0];
+    if ( superclass == G_NODE )
+        return mesh->node_geom;
+
+    if ( superclass < 0 || superclass >= QTY_SCLASS )
+        return NULL;
+    lh = &mesh->classes_by_sclass[superclass];
+    if ( lh->qty <= 0 || lh->list == NULL )
+        return NULL;
+    return ((MO_class_data **) lh->list)[0];
+}
+
+/* Convert a 0-based internal index to the user-facing label. Honours
+ * the optional labels table if the class has one, else falls back to
+ * `index + 1` (Griz's default 1-based id). */
+static int
+pick_label_from_index( MO_class_data *p_mo_class, int id_index )
+{
+    if ( p_mo_class == NULL )
+        return id_index + 1;
+    if ( p_mo_class->labels_found && p_mo_class->labels != NULL
+         && id_index >= 0 && id_index < p_mo_class->qty )
+        return p_mo_class->labels[id_index].label_num;
+    return id_index + 1;
+}
+
+/* Emit a {"data": null} response for pick misses. The existing
+ * server_emit_data_response() substitutes an empty object for NULL
+ * data, which would read as `{}` on the client — not the `null`
+ * miss sentinel 06 §2.1 specifies. */
+static void
+pick_emit_miss( const char *id )
+{
+    cJSON *root = cJSON_CreateObject();
+    if ( root == NULL )
+        return;
+    cJSON_AddStringToObject( root, "type",   "response" );
+    add_id_field( root, id );
+    cJSON_AddStringToObject( root, "status", "ok" );
+    cJSON_AddStringToObject( root, "stdout", "" );
+    cJSON_AddStringToObject( root, "stderr", "" );
+    cJSON_AddNullToObject(   root, "data" );
+    emit_json_line( root );
+    cJSON_Delete( root );
+}
+
+/* pick_at command (06 §2.1, §10 step 2).
+ *   pick_at <x> <y> [mode]
+ * x,y are client-side top-left pixel coords into the current viewport.
+ * mode is accepted but advisory in MVP (the ID pass draws every
+ * instrumented class regardless; the decoder just reports the class tag).
+ * On hit we set the hilite singleton through griz_set_hilite() — same
+ * mutation path parse_command's "hilite" branch uses — then emit
+ * `{kind, id, label, material, coords_world, result_value}`. On miss
+ * (cursor over background, transparent material, or outside viewport)
+ * we emit `data: null` with status=ok per 06 §2.1.
+ */
+static int
+server_try_pick_at( ServerRequest *req, Analysis *analy )
+{
+    int                   x = -1;
+    int                   y = -1;
+    char                  mode[16] = "any";
+    unsigned char         rgba[4]  = { 0, 0, 0, 0 };
+    unsigned int          packed_id;
+    unsigned char         tag;
+    int                   sclass;
+    int                   id_index;
+    int                   user_label;
+    MO_class_data        *p_mo_class;
+    cJSON                *data;
+    int                   matched;
+
+    if ( req == NULL || req->cmd == NULL )
+        return 0;
+    if ( strncmp( req->cmd, "pick_at", 7 ) != 0 )
+        return 0;
+    if ( req->cmd[7] != '\0' && req->cmd[7] != ' ' && req->cmd[7] != '\t' )
+        return 0;
+
+    matched = sscanf( req->cmd, "pick_at %d %d %15s", &x, &y, mode );
+    if ( matched < 2 )
+    {
+        server_emit_error( req->id, "invalid_syntax",
+                           "pick_at requires: pick_at <x> <y> [mode]" );
+        return 1;
+    }
+    (void) mode;   /* MVP: advisory only */
+
+    if ( server_render_pick_at( analy, x, y, rgba ) != 0 )
+    {
+        server_emit_error( req->id, "internal_error",
+                           "ID-buffer render pass failed" );
+        return 1;
+    }
+
+    packed_id = ( (unsigned int) rgba[0] << 16 )
+              | ( (unsigned int) rgba[1] <<  8 )
+              |   (unsigned int) rgba[2];
+    tag = rgba[3];
+
+    if ( tag == GRIZ_ID_TAG_MISS || packed_id == 0 )
+    {
+        pick_emit_miss( req->id );
+        return 1;
+    }
+
+    sclass = pick_tag_to_superclass( tag );
+    if ( sclass < 0 )
+    {
+        pick_emit_miss( req->id );
+        return 1;
+    }
+
+    p_mo_class = pick_class_for_superclass( analy, sclass );
+    if ( p_mo_class == NULL )
+    {
+        pick_emit_miss( req->id );
+        return 1;
+    }
+
+    id_index = (int) ( packed_id - 1u );
+    if ( id_index < 0 || id_index >= p_mo_class->qty )
+    {
+        /* Stale pixel: id encoded a primitive that no longer exists
+         * (class was swapped out between the render pass and the
+         * readback). Surface as a miss rather than a crash. */
+        pick_emit_miss( req->id );
+        return 1;
+    }
+
+    user_label = pick_label_from_index( p_mo_class, id_index );
+    griz_set_hilite( analy, p_mo_class, id_index, user_label );
+
+    /* Build the response payload. Nodes and elements diverge on which
+     * fields are populated: nodes expose coords; elements expose a
+     * material id. result_value comes from the current result buffer,
+     * typed to the class kind (nodal for G_NODE, elemental otherwise). */
+    data = cJSON_CreateObject();
+    cJSON_AddStringToObject( data, "kind",
+        ( p_mo_class->short_name != NULL && p_mo_class->short_name[0] != '\0' )
+            ? p_mo_class->short_name : "element" );
+    cJSON_AddNumberToObject( data, "id",    user_label );
+    cJSON_AddNumberToObject( data, "index", id_index + 1 );
+
+    if ( sclass == G_NODE )
+    {
+        cJSON_AddNullToObject( data, "material" );
+        if ( analy->dimension == 3
+             && analy->state_p != NULL
+             && analy->state_p->nodes.nodes3d != NULL )
+        {
+            GVec3D *coords = analy->state_p->nodes.nodes3d;
+            cJSON *c = cJSON_CreateArray();
+            cJSON_AddItemToArray( c, cJSON_CreateNumber( coords[id_index][0] ) );
+            cJSON_AddItemToArray( c, cJSON_CreateNumber( coords[id_index][1] ) );
+            cJSON_AddItemToArray( c, cJSON_CreateNumber( coords[id_index][2] ) );
+            cJSON_AddItemToObject( data, "coords_world", c );
+        }
+        else if ( analy->state_p != NULL
+                  && analy->state_p->nodes.nodes2d != NULL )
+        {
+            GVec2D *coords = analy->state_p->nodes.nodes2d;
+            cJSON *c = cJSON_CreateArray();
+            cJSON_AddItemToArray( c, cJSON_CreateNumber( coords[id_index][0] ) );
+            cJSON_AddItemToArray( c, cJSON_CreateNumber( coords[id_index][1] ) );
+            cJSON_AddItemToObject( data, "coords_world", c );
+        }
+        else
+        {
+            cJSON_AddNullToObject( data, "coords_world" );
+        }
+
+        if ( p_mo_class->data_buffer != NULL && analy->cur_result != NULL )
+            cJSON_AddNumberToObject( data, "result_value",
+                                     p_mo_class->data_buffer[id_index] );
+        else
+            cJSON_AddNullToObject(   data, "result_value" );
+    }
+    else
+    {
+        int matl = -1;
+        if ( p_mo_class->objects.elems != NULL
+             && p_mo_class->objects.elems->mat != NULL )
+            matl = p_mo_class->objects.elems->mat[id_index];
+        if ( matl >= 0 )
+            cJSON_AddNumberToObject( data, "material", matl + 1 );
+        else
+            cJSON_AddNullToObject(   data, "material" );
+
+        /* Element centroid is deferred past MVP (06 §10 step 2 lists
+         * coords_world as a convenience field). Report null until the
+         * connectivity walk lands; nodes provide world coords already. */
+        cJSON_AddNullToObject( data, "coords_world" );
+
+        if ( p_mo_class->data_buffer != NULL && analy->cur_result != NULL )
+            cJSON_AddNumberToObject( data, "result_value",
+                                     p_mo_class->data_buffer[id_index] );
+        else
+            cJSON_AddNullToObject(   data, "result_value" );
+    }
+
+    server_emit_data_response( req->id, data );
+    return 1;
+}
+
 int
 server_core_dispatch_line( const char *line, Analysis *analy )
 {
@@ -911,6 +1151,21 @@ server_core_dispatch_line( const char *line, Analysis *analy )
      * and GL viewport directly. */
     if ( server_try_resize( &req, analy ) )
     {
+        server_request_free( &req );
+        return 0;
+    }
+
+    /* pick_at: ID-buffer render + hilite mutation + structured data
+     * response. Ahead of parse_command() so it can emit the pick data
+     * directly rather than invent an interpret.c keyword, and so it
+     * piggybacks on the blanket state_changed emit + auto-push frame
+     * at the bottom of this function (the hilite mutation dirties
+     * selection / redraw state, both of which the client needs). */
+    if ( server_try_pick_at( &req, analy ) )
+    {
+        notify_state_all();
+        notify_state_flush( analy );
+        (void) server_render_push_jpeg_frame( analy, 0 );
         server_request_free( &req );
         return 0;
     }

@@ -125,6 +125,29 @@ int  server_render_flush_deferred_if_due( Analysis *analy );
  * drops from gaps (02-protocol.md §4.2). */
 unsigned long long server_render_next_frame_seq( void );
 
+/* ID-buffer pick pass.
+ *
+ * Render the current view with draw_mode=DRAW_IDS (05 §3.1, 06 §3.1),
+ * read the pixel at client-coord (x, y) (top-left origin; the helper
+ * flips y into GL's bottom-left origin internally), and hand back the
+ * raw RGBA8 under the cursor. Callers decode
+ *   packed_id = (r<<16 | g<<8 | b)   (1-based; subtract 1 for index)
+ *   class_tag = a                    (GRIZ_ID_TAG_* from draw.h)
+ * A miss (cursor over background or outside the viewport) reads back
+ * (0, 0, 0, 0) and the caller surfaces `data=null`.
+ *
+ * The helper disables lighting / blending / dither / smoothing around
+ * the pass via glPushAttrib / glPopAttrib so the exact RGBA the fragment
+ * shader emits reaches the framebuffer unmodified. It then re-runs the
+ * normal render once before returning so subsequent captures
+ * (auto-push frame, inline screenshot) reflect the scene with the
+ * updated hilite instead of the ID-coloured picking buffer.
+ *
+ * Returns 0 on success (including a miss), -1 on render failure.
+ */
+int server_render_pick_at( Analysis *analy, int x, int y,
+                           unsigned char rgba[4] );
+
 /* Resize the OSMesa viewport to (w, h).
  *
  * Allocates a fresh RGBA8 backing buffer, rebinds the existing

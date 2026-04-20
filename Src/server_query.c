@@ -458,6 +458,243 @@ build_q_selection_data( Analysis *analy )
 }
 
 /* --------------------------------------------------------------------
+ * node / element metadata queries (06 §6.1 MVP).
+ *
+ * Both resolve an "id" (user-facing label, 1-based or labels-aliased)
+ * to the internal 0-based index and emit a populated `data` object
+ * matching 06 §6.1. Integration-point arrays, attached-element lists,
+ * and displacement are deferred past MVP per 06 §11 and reported as
+ * `null` here so the response shape stays stable.
+ * ------------------------------------------------------------------ */
+
+/* Per-superclass connectivity stride. Matches the per-element node
+ * counts draw.c uses; returning 0 for non-element superclasses lets
+ * build_q_element skip connectivity output for those cases without
+ * crashing. */
+static int
+connectivity_stride_for_superclass( int superclass )
+{
+    switch ( superclass )
+    {
+        case G_HEX:      return 8;
+        case G_TET:      return 4;
+        case G_QUAD:     return 4;
+        case G_TRI:      return 3;
+        case G_BEAM:     return 3;
+        case G_TRUSS:    return 2;
+        case G_PYRAMID:  return 5;
+        case G_WEDGE:    return 6;
+        case G_PARTICLE: return 1;
+        default:         return 0;
+    }
+}
+
+/* Invert a labels-table lookup: find the internal 0-based index whose
+ * user-facing label equals `want`. Linear scan — fine for MVP, and
+ * matches the current cost model (picks happen at human click rate).
+ * Falls back to (want - 1) when the class has no labels table. */
+static int
+index_from_label( MO_class_data *p_mo_class, int want )
+{
+    int i;
+
+    if ( p_mo_class == NULL )
+        return -1;
+
+    if ( !p_mo_class->labels_found || p_mo_class->labels == NULL )
+    {
+        int idx = want - 1;
+        if ( idx < 0 || idx >= p_mo_class->qty )
+            return -1;
+        return idx;
+    }
+
+    for ( i = 0; i < p_mo_class->qty; i++ )
+        if ( p_mo_class->labels[i].label_num == want )
+            return p_mo_class->labels[i].local_id;
+
+    return -1;
+}
+
+static cJSON *
+build_q_node( Analysis *analy, int id )
+{
+    cJSON         *data;
+    MO_class_data *p_mo_class;
+    int            idx;
+
+    if ( analy == NULL || analy->mesh_table == NULL || analy->mesh_qty <= 0 )
+        return NULL;
+
+    p_mo_class = analy->mesh_table[0].node_geom;
+    if ( p_mo_class == NULL )
+        return NULL;
+
+    idx = index_from_label( p_mo_class, id );
+    if ( idx < 0 )
+        return NULL;
+
+    data = cJSON_CreateObject();
+    cJSON_AddStringToObject( data, "kind",  "node" );
+    cJSON_AddNumberToObject( data, "id",    id );
+    cJSON_AddNumberToObject( data, "index", idx + 1 );
+
+    if ( analy->dimension == 3
+         && analy->state_p != NULL
+         && analy->state_p->nodes.nodes3d != NULL )
+    {
+        GVec3D *c = analy->state_p->nodes.nodes3d;
+        cJSON  *a = cJSON_CreateArray();
+        cJSON_AddItemToArray( a, cJSON_CreateNumber( c[idx][0] ) );
+        cJSON_AddItemToArray( a, cJSON_CreateNumber( c[idx][1] ) );
+        cJSON_AddItemToArray( a, cJSON_CreateNumber( c[idx][2] ) );
+        cJSON_AddItemToObject( data, "coords", a );
+    }
+    else if ( analy->state_p != NULL
+              && analy->state_p->nodes.nodes2d != NULL )
+    {
+        GVec2D *c = analy->state_p->nodes.nodes2d;
+        cJSON  *a = cJSON_CreateArray();
+        cJSON_AddItemToArray( a, cJSON_CreateNumber( c[idx][0] ) );
+        cJSON_AddItemToArray( a, cJSON_CreateNumber( c[idx][1] ) );
+        cJSON_AddItemToObject( data, "coords", a );
+    }
+    else
+    {
+        cJSON_AddNullToObject( data, "coords" );
+    }
+
+    /* Displacement + attached_elements are post-MVP (06 §11). */
+    cJSON_AddNullToObject( data, "displacement" );
+    cJSON_AddNullToObject( data, "attached_elements" );
+
+    if ( p_mo_class->data_buffer != NULL && analy->cur_result != NULL )
+        cJSON_AddNumberToObject( data, "result_value",
+                                 p_mo_class->data_buffer[idx] );
+    else
+        cJSON_AddNullToObject(   data, "result_value" );
+
+    return data;
+}
+
+void *
+build_q_node_data( Analysis *analy, int id )
+{
+    return build_q_node( analy, id );
+}
+
+/* Pick the first element class whose label space covers `id`. Scans
+ * superclasses in the order we instrument them in draw.c (hex, tet,
+ * quad, tri, beam, truss, pyramid, wedge, particle) so the lookup
+ * rule matches what pick_at resolves. Multi-class meshes fall back
+ * to the first class with the id in range — 06 §11 deferral. */
+static MO_class_data *
+find_element_class_for_id( Analysis *analy, int id, int *out_index )
+{
+    static const int order[] = {
+        G_HEX, G_TET, G_QUAD, G_TRI,
+        G_BEAM, G_TRUSS, G_PYRAMID, G_WEDGE, G_PARTICLE
+    };
+    Mesh_data *mesh;
+    size_t     i;
+    int        k;
+
+    if ( analy == NULL || analy->mesh_table == NULL
+         || analy->mesh_qty <= 0 )
+        return NULL;
+    mesh = &analy->mesh_table[0];
+
+    for ( i = 0; i < sizeof( order ) / sizeof( order[0] ); i++ )
+    {
+        int        sc = order[i];
+        List_head *lh;
+        if ( sc < 0 || sc >= QTY_SCLASS )
+            continue;
+        lh = &mesh->classes_by_sclass[sc];
+        for ( k = 0; k < lh->qty; k++ )
+        {
+            MO_class_data *cd = ((MO_class_data **) lh->list)[k];
+            int            idx;
+            if ( cd == NULL )
+                continue;
+            idx = index_from_label( cd, id );
+            if ( idx >= 0 )
+            {
+                if ( out_index != NULL )
+                    *out_index = idx;
+                return cd;
+            }
+        }
+    }
+    return NULL;
+}
+
+static cJSON *
+build_q_element( Analysis *analy, int id )
+{
+    cJSON         *data;
+    MO_class_data *p_mo_class;
+    int            idx = -1;
+    int            stride;
+
+    p_mo_class = find_element_class_for_id( analy, id, &idx );
+    if ( p_mo_class == NULL || idx < 0 )
+        return NULL;
+
+    data   = cJSON_CreateObject();
+    stride = connectivity_stride_for_superclass( p_mo_class->superclass );
+
+    cJSON_AddStringToObject( data, "kind",
+        ( p_mo_class->short_name != NULL && p_mo_class->short_name[0] != '\0' )
+            ? p_mo_class->short_name : "element" );
+    cJSON_AddStringToObject( data, "type",
+        ( p_mo_class->short_name != NULL && p_mo_class->short_name[0] != '\0' )
+            ? p_mo_class->short_name : "element" );
+    cJSON_AddNumberToObject( data, "id",    id );
+    cJSON_AddNumberToObject( data, "index", idx + 1 );
+
+    if ( p_mo_class->objects.elems != NULL
+         && p_mo_class->objects.elems->mat != NULL )
+        cJSON_AddNumberToObject( data, "material",
+            p_mo_class->objects.elems->mat[idx] + 1 );
+    else
+        cJSON_AddNullToObject(   data, "material" );
+
+    if ( stride > 0
+         && p_mo_class->objects.elems != NULL
+         && p_mo_class->objects.elems->nodes != NULL )
+    {
+        cJSON *conn = cJSON_CreateArray();
+        int   *base = p_mo_class->objects.elems->nodes + (size_t) idx * stride;
+        int    j;
+        for ( j = 0; j < stride; j++ )
+            cJSON_AddItemToArray( conn, cJSON_CreateNumber( base[j] + 1 ) );
+        cJSON_AddItemToObject( data, "connectivity", conn );
+    }
+    else
+    {
+        cJSON_AddNullToObject( data, "connectivity" );
+    }
+
+    if ( p_mo_class->data_buffer != NULL && analy->cur_result != NULL )
+        cJSON_AddNumberToObject( data, "result_value",
+                                 p_mo_class->data_buffer[idx] );
+    else
+        cJSON_AddNullToObject(   data, "result_value" );
+
+    /* Per-integration-point array is post-MVP (06 §11). */
+    cJSON_AddNullToObject( data, "result_value_per_int_pt" );
+
+    return data;
+}
+
+void *
+build_q_element_data( Analysis *analy, int id )
+{
+    return build_q_element( analy, id );
+}
+
+/* --------------------------------------------------------------------
  * state (composite)
  * ------------------------------------------------------------------ */
 static cJSON *
@@ -508,11 +745,51 @@ build_q_state_data( Analysis *analy )
 /* --------------------------------------------------------------------
  * dispatcher
  * ------------------------------------------------------------------ */
+/* q_node / q_element accept a numeric argument after the keyword. Return
+ * 0 if the command doesn't match `prefix`; set *arg_out to the parsed
+ * integer and return 1 on a clean parse; set *arg_out=-1 and return 1
+ * if the prefix matched but the arg was missing / non-numeric (caller
+ * surfaces invalid_syntax). */
+static int
+parse_numeric_arg( const char *cmd, const char *prefix, int *arg_out )
+{
+    size_t plen = strlen( prefix );
+    const char *p;
+    int         n   = 0;
+    int         any = 0;
+
+    if ( strncmp( cmd, prefix, plen ) != 0 )
+        return 0;
+    if ( cmd[plen] != '\0' && cmd[plen] != ' ' && cmd[plen] != '\t' )
+        return 0;
+
+    p = server_skip_ws( cmd + plen );
+    if ( *p == '\0' )
+    {
+        *arg_out = -1;
+        return 1;
+    }
+    while ( *p >= '0' && *p <= '9' )
+    {
+        n = n * 10 + ( *p - '0' );
+        any = 1;
+        p++;
+    }
+    if ( !any )
+    {
+        *arg_out = -1;
+        return 1;
+    }
+    *arg_out = n;
+    return 1;
+}
+
 int
 server_try_query( const char *id, const char *cmd, Analysis *analy )
 {
     const char *c;
     cJSON      *data = NULL;
+    int         qid;
 
     c = server_skip_ws( cmd );
 
@@ -532,6 +809,38 @@ server_try_query( const char *id, const char *cmd, Analysis *analy )
         data = build_q_render( analy );
     else if ( strcmp( c, "q_database" ) == 0 )
         data = build_q_database( analy );
+    else if ( parse_numeric_arg( c, "q_node", &qid ) )
+    {
+        if ( qid < 0 )
+        {
+            server_emit_error( id, "invalid_syntax",
+                               "q_node requires a numeric id argument" );
+            return 1;
+        }
+        data = build_q_node( analy, qid );
+        if ( data == NULL )
+        {
+            server_emit_error( id, "not_found",
+                               "no node with that id in the current mesh" );
+            return 1;
+        }
+    }
+    else if ( parse_numeric_arg( c, "q_element", &qid ) )
+    {
+        if ( qid < 0 )
+        {
+            server_emit_error( id, "invalid_syntax",
+                               "q_element requires a numeric id argument" );
+            return 1;
+        }
+        data = build_q_element( analy, qid );
+        if ( data == NULL )
+        {
+            server_emit_error( id, "not_found",
+                               "no element with that id in the current mesh" );
+            return 1;
+        }
+    }
     else
         return 0;
 
