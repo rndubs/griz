@@ -103,7 +103,8 @@ build_for_key( Analysis *analy, const char *key )
 
 /* Emit a single line:
  *   {"type":"event","event":"state_changed","state_seq":N,"fields":{...}}
- */
+ * Routes through the shared server_core emitter so stdio and RPC
+ * transports share the same code path. */
 static void
 emit_state_changed( cJSON *fields )
 {
@@ -118,9 +119,7 @@ emit_state_changed( cJSON *fields )
     txt = cJSON_PrintUnformatted( root );
     if ( txt != NULL )
     {
-        fputs( txt, stdout );
-        fputc( '\n', stdout );
-        fflush( stdout );
+        server_emit_raw( txt );
         free( txt );
     }
     cJSON_Delete( root );

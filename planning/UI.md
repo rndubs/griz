@@ -18,13 +18,15 @@ Source: [03-server.md §9 steps 1–5](ui-design/03-server.md). Richer state + e
 ### Phase 2 — RPC transport
 Source: [02-protocol.md §7](ui-design/02-protocol.md), [03-server.md §9 steps 6–8](ui-design/03-server.md).
 
-- ⬜ Extract transport-neutral `server_core_dispatch()` from the current stdio loop.
-- ⬜ Add `Src/server_rpc.c`: `bind(127.0.0.1:0)`, write rendezvous JSON (0600), `accept`, validate first-frame 32-byte token with constant-time compare.
-- ⬜ 5-byte framing (`uint32 N + kind`) with `kind ∈ {0x01 JSON, 0x02 binary, 0x03 heartbeat}` and a 16 MiB cap — [02-protocol.md §2.2](ui-design/02-protocol.md).
-- ⬜ 20-second heartbeats with RTT echo; 60-second silence ⇒ `session_ending(reason="peer_idle")`.
+- ✅ Extract transport-neutral `server_core_dispatch_line()` from the current stdio loop (`Src/server_core.c`, `Src/server_stdio.c`). Both transports now share the same request → response → state_changed state machine, routed through a pluggable `ServerLineEmitter` hook.
+- ✅ Add `Src/server_rpc.c`: `bind(127.0.0.1:0)`, write rendezvous JSON (0600, atomic rename, `$HOME/.griz/rendezvous/<session>.json`), single-connection `accept`, validate first-frame 32-byte base64 token with constant-time compare.
+- ✅ 5-byte framing (`uint32 N + kind`) with `kind ∈ {0x01 JSON, 0x02 binary (post-MVP), 0x03 heartbeat}` and a 16 MiB cap — [02-protocol.md §2.2](ui-design/02-protocol.md). Heartbeats (`0x03`) are echoed verbatim so the client can compute RTT.
+- ✅ SIGTERM / SIGINT handler emits `session_ending(reason="signal_term")` through the framed emitter and `shutdown(SHUT_RD)`s the client socket so the main loop exits promptly — [03-server.md §7.3](ui-design/03-server.md).
+- 🟡 20-second heartbeat *cadence* and 60-second peer-idle detection are not yet wired; the server echoes inbound heartbeats but does not proactively send them or time out on silence.
 - ⬜ Port `pygriz_mcp/tests/test_smoke.py` to run against `--transport=rpc` as the envelope-parity gate.
-- ⬜ Split dispatch into three threads (command / render / I/O) with bounded MPSC queues and a latest-wins frame mailbox — [03-server.md §2.2](ui-design/03-server.md).
-- ⬜ SIGTERM handler emits `session_ending(reason="signal_term", seconds_remaining=N)` and flushes within ≤2 s — [03-server.md §7.3](ui-design/03-server.md).
+- ⬜ Split dispatch into three threads (command / render / I/O) with bounded MPSC queues and a latest-wins frame mailbox — [03-server.md §2.2](ui-design/03-server.md). Current RPC loop is single-threaded (valid v0 per [02-protocol.md §7](ui-design/02-protocol.md)).
+
+New server flags (see `Src/server_main.c`): `--bind=HOST`, `--port=N`, `--rendezvous=PATH` — all optional, defaults are `127.0.0.1`, kernel-assigned port, `$HOME/.griz/rendezvous/griz-<hex>.json`.
 
 ### Phase 3 — Rendering & frame push
 Source: [05-rendering-and-streaming.md](ui-design/05-rendering-and-streaming.md) MVP scope (§§3, 4.1, 5.3, 6, 7.1). LOD, H.264/AV1, MP4 animation export, `q_stats`, and EGL-surfaceless are post-MVP.

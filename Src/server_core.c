@@ -17,8 +17,11 @@
 
 #include "cJSON.h"
 #include "server_core.h"
+#include "server_events.h"
+#include "server_query.h"
 
 #define GRIZ_PROTOCOL_VERSION "1.0"
+#define GRIZ_SERVER_MAX_LINE 4096
 
 /* Heuristic: try JSON parsing only when the line looks like an object.
  * parse_command accepts lots of syntax, and feeding every raw command
@@ -33,15 +36,60 @@ looks_like_json_object( const char *line )
     return *line == '{';
 }
 
+/* Default emitter: write the JSON text followed by a newline to stdout
+ * and flush. Matches the stdio transport's line-delimited framing. */
+static void
+stdout_line_emitter( const char *buf, size_t len, void *ctx )
+{
+    (void) ctx;
+    if ( buf == NULL || len == 0 )
+        return;
+    fwrite( buf, 1, len, stdout );
+    fputc( '\n', stdout );
+    fflush( stdout );
+}
+
+static ServerLineEmitter g_line_emitter     = stdout_line_emitter;
+static void              *g_line_emitter_ctx = NULL;
+
+void
+server_set_line_emitter( ServerLineEmitter fn, void *ctx )
+{
+    if ( fn == NULL )
+    {
+        g_line_emitter     = stdout_line_emitter;
+        g_line_emitter_ctx = NULL;
+    }
+    else
+    {
+        g_line_emitter     = fn;
+        g_line_emitter_ctx = ctx;
+    }
+}
+
+ServerLineEmitter
+server_current_line_emitter( void **ctx_out )
+{
+    if ( ctx_out != NULL )
+        *ctx_out = g_line_emitter_ctx;
+    return g_line_emitter;
+}
+
+void
+server_emit_raw( const char *json_text )
+{
+    if ( json_text == NULL )
+        return;
+    g_line_emitter( json_text, strlen( json_text ), g_line_emitter_ctx );
+}
+
 static void
 emit_json_line( cJSON *obj )
 {
     char *rendered = cJSON_PrintUnformatted( obj );
     if ( rendered != NULL )
     {
-        fputs( rendered, stdout );
-        fputc( '\n', stdout );
-        fflush( stdout );
+        g_line_emitter( rendered, strlen( rendered ), g_line_emitter_ctx );
         free( rendered );
     }
 }
@@ -516,6 +564,112 @@ server_try_hello( const char *line )
 
     cJSON_Delete( root );
     return 1;
+}
+
+/* ---------------------------------------------------------------- *
+ * Transport-neutral per-line dispatcher. Lifted out of the stdio
+ * loop so server_rpc.c (Phase 2 of planning/UI.md) can drive the
+ * same state machine over length-framed JSON frames.
+ * ---------------------------------------------------------------- */
+
+static int
+server_is_terminator( const char *s )
+{
+    return ( strcmp( s, "quit" ) == 0
+          || strcmp( s, "exit" ) == 0
+          || strcmp( s, "end"  ) == 0 );
+}
+
+int
+server_core_dispatch_line( const char *line, Analysis *analy )
+{
+    ServerRequest req;
+    char cmd_buf[GRIZ_SERVER_MAX_LINE];
+
+    if ( line == NULL )
+        return 0;
+
+    /* Skip empty lines and #-comments (mirrors the old stdio loop). */
+    while ( *line == ' ' || *line == '\t' )
+        line++;
+    if ( line[0] == '\0' || line[0] == '#' )
+        return 0;
+
+    /* Optional handshake: consume hello frames and loop back. The
+     * client may send zero, one, or more hellos. */
+    if ( server_try_hello( line ) )
+        return 0;
+
+    if ( server_parse_request( line, &req ) != 0 )
+    {
+        /* Malformed JSON — error response already emitted. */
+        return 0;
+    }
+
+    if ( server_is_terminator( req.cmd ) )
+    {
+        server_emit_response( req.id, 1, "", "" );
+        server_request_free( &req );
+        return 1;
+    }
+
+    /* Dispatch query commands (q_state, q_view, q_time, ...) directly.
+     * They bypass parse_command and emit a response with a populated
+     * `data` field. */
+    if ( server_try_query( req.id, req.cmd, analy ) )
+    {
+        server_request_free( &req );
+        return 0;
+    }
+
+    /* parse_command() takes a mutable buffer (it tokenises in place);
+     * copy the resolved command so the cJSON-owned string is not
+     * disturbed. Truncate on overflow — GRIZ_SERVER_MAX_LINE matches
+     * the stdio input line limit so truncation shouldn't happen in
+     * practice unless the client sends a pathological JSON request. */
+    strncpy( cmd_buf, req.cmd, sizeof( cmd_buf ) - 1 );
+    cmd_buf[sizeof( cmd_buf ) - 1] = '\0';
+
+    server_clear_error();
+    server_capture_begin();
+    notify_state_reset();
+    parse_command( cmd_buf, analy );
+    {
+        char       *out_s = NULL;
+        char       *err_s = NULL;
+        const char *err_code    = NULL;
+        const char *err_message = NULL;
+        int         had_error;
+
+        server_capture_end( &out_s, &err_s );
+
+        had_error = server_peek_error( &err_code, &err_message );
+        if ( had_error )
+        {
+            server_emit_error( req.id, err_code, err_message );
+        }
+        else
+        {
+            server_emit_response( req.id, 1,
+                                  out_s ? out_s : "",
+                                  err_s ? err_s : "" );
+        }
+        free( out_s );
+        free( err_s );
+
+        /* MVP: emit a state_changed event after every successful
+         * mutating command. Instrumentation in interpret.c will
+         * eventually replace this blanket flag with targeted
+         * notify_state(key) calls; see planning/ui-design/
+         * 03-server.md §5.1. */
+        if ( !had_error )
+        {
+            notify_state_all();
+            notify_state_flush( analy );
+        }
+    }
+    server_request_free( &req );
+    return 0;
 }
 
 #endif /* GRIZ_SERVER_BUILD */

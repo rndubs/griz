@@ -1,17 +1,16 @@
 /*
  * server_stdio.c - Stdio transport dispatch loop for griz-server.
  *
- * Extracted verbatim from viewer.c::process_server_mode_stdio() as
- * step 1 of the UI server refactor (planning/ui-design/03-server.md §9).
- * No behavior change: startup delegates to server_core_startup(), query
- * commands dispatch through server_try_query(), and parse_command() is
- * invoked inside the same begin/capture/end guards.
+ * Thin wrapper around server_core_dispatch_line() that reads
+ * newline-delimited JSON (or raw) requests from stdin and relies on the
+ * default stdout emitter for responses/events.
  *
- * Phase 2 status (planning/mcp/05-protocol.md):
+ * Phase 2 status (planning/ui-design/02-protocol.md):
  *   - JSON request envelope: supported via server_parse_request().
  *   - JSON response envelope: server_emit_response() per command.
  *   - Handshake (ready/hello/hello_ack): supported via server_try_hello().
  *   - Output capture: fd-level, via server_capture_begin/end().
+ *   - Transport-neutral dispatcher shared with server_rpc.c.
  *
  * "quit", "exit", "end", or EOF on stdin ends the loop.
  */
@@ -23,28 +22,22 @@
 #include <string.h>
 
 #include "viewer.h"
-#include "cJSON.h"
 #include "server_core.h"
 #include "server_core_startup.h"
-#include "server_events.h"
-#include "server_query.h"
 
-#define GRIZ_SERVER_MAX_LINE 4096
-
-static Bool_type
-server_is_terminator( const char *s )
-{
-    return ( strcmp( s, "quit" ) == 0
-          || strcmp( s, "exit" ) == 0
-          || strcmp( s, "end"  ) == 0 );
-}
+#define GRIZ_SERVER_STDIO_LINE 4096
 
 int
 process_server_mode_stdio( const char *db_path, int width, int height )
 {
     Analysis *analy = NULL;
-    char line[GRIZ_SERVER_MAX_LINE];
+    char line[GRIZ_SERVER_STDIO_LINE];
     int rc;
+
+    /* Reset the emitter to its built-in stdout default in case a
+     * previous transport session left an RPC emitter installed (matters
+     * only in pathological test harnesses that reuse the same process). */
+    server_set_line_emitter( NULL, NULL );
 
     rc = server_core_startup( &analy, db_path, width, height );
     if ( rc != 0 )
@@ -54,92 +47,14 @@ process_server_mode_stdio( const char *db_path, int width, int height )
 
     while ( fgets( line, sizeof( line ), stdin ) != NULL )
     {
-        ServerRequest req;
-        char cmd_buf[GRIZ_SERVER_MAX_LINE];
         size_t len = strlen( line );
 
         while ( len > 0
                 && ( line[len - 1] == '\n' || line[len - 1] == '\r' ) )
             line[--len] = '\0';
 
-        if ( line[0] == '\0' || line[0] == '#' )
-            continue;
-
-        /* Optional handshake: consume hello frames and loop back. The
-         * client may send zero, one, or more hellos; non-hello JSON
-         * and raw command lines fall through to request processing. */
-        if ( server_try_hello( line ) )
-            continue;
-
-        if ( server_parse_request( line, &req ) != 0 )
-        {
-            /* Malformed JSON — error response already emitted. */
-            continue;
-        }
-
-        if ( server_is_terminator( req.cmd ) )
-        {
-            server_emit_response( req.id, 1, "", "" );
-            server_request_free( &req );
+        if ( server_core_dispatch_line( line, analy ) == 1 )
             break;
-        }
-
-        /* Dispatch query commands (q_state, q_view, q_time, ...) directly —
-         * they bypass parse_command and emit a response with a
-         * populated `data` field. */
-        if ( server_try_query( req.id, req.cmd, analy ) )
-        {
-            server_request_free( &req );
-            continue;
-        }
-
-        /* parse_command() takes a mutable buffer (it tokenises in place);
-         * copy the resolved command so the cJSON-owned string is not
-         * disturbed. Truncate on overflow — GRIZ_SERVER_MAX_LINE matches
-         * the input line limit so truncation shouldn't happen in practice
-         * unless the client sends a pathological JSON request. */
-        strncpy( cmd_buf, req.cmd, sizeof( cmd_buf ) - 1 );
-        cmd_buf[sizeof( cmd_buf ) - 1] = '\0';
-
-        server_clear_error();
-        server_capture_begin();
-        notify_state_reset();
-        parse_command( cmd_buf, analy );
-        {
-            char       *out_s = NULL;
-            char       *err_s = NULL;
-            const char *err_code    = NULL;
-            const char *err_message = NULL;
-            int         had_error;
-
-            server_capture_end( &out_s, &err_s );
-
-            had_error = server_peek_error( &err_code, &err_message );
-            if ( had_error )
-            {
-                server_emit_error( req.id, err_code, err_message );
-            }
-            else
-            {
-                server_emit_response( req.id, 1,
-                                      out_s ? out_s : "",
-                                      err_s ? err_s : "" );
-            }
-            free( out_s );
-            free( err_s );
-
-            /* MVP: emit a state_changed event after every successful
-             * mutating command. Instrumentation in interpret.c will
-             * eventually replace this blanket flag with targeted
-             * notify_state(key) calls; see planning/ui-design/
-             * 03-server.md §5.1. */
-            if ( !had_error )
-            {
-                notify_state_all();
-                notify_state_flush( analy );
-            }
-        }
-        server_request_free( &req );
     }
 
     server_core_history_cleanup( analy );
