@@ -11,8 +11,9 @@
 // SessionState mirror, and stitches them together. See planning/ui-design/04-client.md
 // §2.1 / §11.
 
-namespace griz::ui    { class MainWindow; }
-namespace griz::model { class SessionState; }
+namespace griz::ui       { class MainWindow; }
+namespace griz::model    { class SessionState; }
+namespace griz::commands { class CommandBridge; }
 
 namespace griz {
 
@@ -43,12 +44,14 @@ private:
     QString               m_serverBinary;
     QString               m_databasePath;
     bool                  m_sessionStarted = false;
+    bool                  m_shuttingDown   = false;
 
     QString               m_initialQStateId;
 
-    net::Worker          *m_worker         = nullptr;
-    model::SessionState  *m_sessionState   = nullptr;
-    ui::MainWindow       *m_mainWindow     = nullptr;
+    net::Worker              *m_worker         = nullptr;
+    model::SessionState      *m_sessionState   = nullptr;
+    ui::MainWindow           *m_mainWindow     = nullptr;
+    commands::CommandBridge  *m_commandBridge  = nullptr;
 };
 
 } // namespace griz

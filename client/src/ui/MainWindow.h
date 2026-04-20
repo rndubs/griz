@@ -36,6 +36,9 @@ public:
     Console       *console()       const { return m_console; }
     Viewport      *viewport()      const { return m_viewport; }
     MaterialsDock *materialsDock() const { return m_materialsDock; }
+    ResultsDock   *resultsDock()   const { return m_resultsDock; }
+    SelectionDock *selectionDock() const { return m_selectionDock; }
+    TimeSlider    *timeSlider()    const { return m_timeSlider; }
 
 public slots:
     void setConnectionStatus(const QString &text);

@@ -198,12 +198,15 @@ bool Worker::waitForReady(int timeoutMs) {
 }
 
 QString Worker::sendCommand(const QString &cmd) {
+    return sendCommand(cmd, QJsonObject{});
+}
+
+QString Worker::sendCommand(const QString &cmd, const QJsonObject &extras) {
     const QString requestId = QStringLiteral("req_%1").arg(m_nextRequestId++);
-    QJsonObject obj {
-        { QStringLiteral("type"), QStringLiteral("request") },
-        { QStringLiteral("id"),   requestId },
-        { QStringLiteral("cmd"),  cmd },
-    };
+    QJsonObject obj = extras;
+    obj.insert(QStringLiteral("type"), QStringLiteral("request"));
+    obj.insert(QStringLiteral("id"),   requestId);
+    obj.insert(QStringLiteral("cmd"),  cmd);
     sendJson(obj);
     return requestId;
 }

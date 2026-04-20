@@ -1,9 +1,16 @@
 #include "App.h"
 
+#include "commands/CommandBridge.h"
 #include "model/SessionState.h"
 #include "ui/Console.h"
 #include "ui/MainWindow.h"
 #include "ui/MaterialsDock.h"
+#include "ui/ResultsDock.h"
+#include "ui/SelectionDock.h"
+#include "ui/TimeSlider.h"
+#include "ui/Viewport.h"
+
+#include <QMessageBox>
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -23,9 +30,11 @@
 namespace griz {
 
 App::App(QObject *parent) : QObject(parent) {
-    m_worker       = new net::Worker(this);
-    m_sessionState = new model::SessionState(this);
-    m_mainWindow   = new ui::MainWindow();
+    m_worker        = new net::Worker(this);
+    m_sessionState  = new model::SessionState(this);
+    m_mainWindow    = new ui::MainWindow();
+    m_commandBridge = new commands::CommandBridge(
+        m_worker, m_mainWindow->viewport(), this);
 
     connect(m_mainWindow->console(), &ui::Console::commandEntered,
             this, &App::onConsoleCommand);
@@ -38,10 +47,44 @@ App::App(QObject *parent) : QObject(parent) {
             this, &App::onWorkerResponse);
     connect(m_worker, &net::Worker::eventReceived,
             this, &App::onWorkerEvent);
+    connect(m_worker, &net::Worker::frameReceived,
+            m_mainWindow->viewport(), &ui::Viewport::onBinaryFrame);
+    connect(m_worker, &net::Worker::protocolMismatch,
+            this, [this](const QString &serverVer, const QString &clientVer) {
+        QMessageBox::critical(m_mainWindow,
+            tr("Protocol mismatch"),
+            tr("The griz-server speaks protocol %1, but this client speaks "
+               "%2. Upgrade one side so the two match and relaunch.")
+                .arg(serverVer.isEmpty() ? tr("(unknown)") : serverVer,
+                     clientVer));
+    });
+
+    connect(m_mainWindow->viewport(), &ui::Viewport::fpsChanged,
+            m_mainWindow, &ui::MainWindow::setFpsLabel);
+    connect(m_mainWindow->viewport(), &ui::Viewport::resizeRequested,
+            this, [this](int w, int h) {
+        if (!m_worker->isConnected()) return;
+        m_worker->sendCommand(QStringLiteral("resize"), QJsonObject{
+            { QStringLiteral("w"), w },
+            { QStringLiteral("h"), h },
+        });
+    });
 
     connect(m_sessionState, &model::SessionState::materialsChanged,
             this, [this]() {
         m_mainWindow->materialsDock()->setMaterials(m_sessionState->materials());
+    });
+    connect(m_sessionState, &model::SessionState::timeChanged,
+            m_mainWindow->timeSlider(), &ui::TimeSlider::setTime);
+    connect(m_sessionState, &model::SessionState::resultsChanged,
+            m_mainWindow->resultsDock(), &ui::ResultsDock::setResults);
+    connect(m_sessionState, &model::SessionState::selectionChanged,
+            m_mainWindow->selectionDock(), &ui::SelectionDock::setSelection);
+
+    connect(m_mainWindow->timeSlider(), &ui::TimeSlider::stateRequested,
+            this, [this](int state) {
+        if (!m_worker->isConnected()) return;
+        m_worker->sendCommand(QStringLiteral("state %1").arg(state));
     });
     connect(m_sessionState, &model::SessionState::databaseChanged,
             this, [this](const model::DatabaseInfo &db) {
@@ -158,12 +201,31 @@ void App::onWorkerConnected() {
             tr("[connected] server protocol %1").arg(version));
     }
     m_initialQStateId = m_worker->sendCommand(QStringLiteral("q_state"));
+
+    // Bring the server's framebuffer in sync with the real widget size now
+    // that commands will succeed — the Worker's launch-time -w 1024 1024 is
+    // only the startup default.
+    m_mainWindow->viewport()->flushPendingResize();
 }
 
 void App::onWorkerDisconnected(const QString &reason) {
     m_mainWindow->setConnectionStatus(tr("disconnected"));
     m_mainWindow->console()->appendOutput(
         tr("[disconnected] %1").arg(reason));
+
+    // Unexpected drops (tunnel death, peer idle, crash) get a modal so the
+    // user can decide to quit vs. investigate. A clean quit path sets
+    // m_shuttingDown so we don't nag on the way out.
+    if (m_shuttingDown) return;
+    const bool peerIdle = reason.contains(QStringLiteral("peer_idle"));
+    const bool exited   = reason.contains(QStringLiteral("exited"));
+    if (peerIdle || exited) {
+        QMessageBox::warning(m_mainWindow,
+            tr("Connection lost"),
+            tr("The griz-server session ended:\n\n%1\n\n"
+               "Relaunching is not yet automated — quit and restart the "
+               "client to reconnect.").arg(reason));
+    }
 }
 
 void App::onWorkerResponse(const griz::net::Response &response) {
@@ -197,6 +259,7 @@ void App::onWorkerEvent(const QJsonObject &event) {
 }
 
 void App::onAboutToQuit() {
+    m_shuttingDown = true;
     if (m_worker) {
         m_worker->shutdown(3000);
     }

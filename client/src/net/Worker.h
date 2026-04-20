@@ -62,6 +62,11 @@ public:
     // The Response surfaces via responseReceived().
     QString sendCommand(const QString &cmd);
 
+    // Overload for commands that take a JSON body (e.g. resize with
+    // `{"w":W,"h":H}`, or future picks with `{"x":X,"y":Y,"mode":...}`).
+    // Extras merge into the outgoing envelope alongside type/id/cmd.
+    QString sendCommand(const QString &cmd, const QJsonObject &extras);
+
     // Sync helper: send + wait for the matching response. Uses a local event
     // loop; safe to call from the UI thread. Returns false on timeout or if
     // the session died before the response arrived.

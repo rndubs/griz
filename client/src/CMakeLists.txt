@@ -1,5 +1,6 @@
 add_subdirectory(net)
 add_subdirectory(model)
+add_subdirectory(commands)
 add_subdirectory(ui)
 
 add_executable(griz-client
@@ -9,6 +10,7 @@ add_executable(griz-client
 target_link_libraries(griz-client
     PRIVATE
         griz-client-ui
+        griz-client-commands
         griz-client-model
         griz-client-net
         Qt5::Core
