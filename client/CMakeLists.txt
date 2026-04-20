@@ -26,3 +26,9 @@ find_package(Qt5 5.15 REQUIRED COMPONENTS
     Concurrent)
 
 add_subdirectory(src)
+
+option(GRIZ_CLIENT_BUILD_TESTS "Build client-side unit tests" ON)
+if(GRIZ_CLIENT_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

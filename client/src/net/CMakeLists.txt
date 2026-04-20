@@ -1,5 +1,6 @@
 add_library(griz-client-net STATIC
     Framing.cpp
+    Rendezvous.cpp
     Worker.cpp)
 
 target_include_directories(griz-client-net

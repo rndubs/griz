@@ -17,6 +17,10 @@ Sibling tree to `Src/`; separate CMake build, no autoconf. MVP targets **Qt 5.15
 
 Build driver: `./build_client.sh [release|debug] [-- <cmake args>]` at the repo root. Requires `cmake >= 3.16` (default TOSS `cmake/3.23.1` works; `module load cmake/3.26.3` is fine) and Qt 5.15 system headers (already present at `/usr/include/qt5`). Output: `client/build/linux-<type>/src/griz-client`.
 
+Tests: `cd client/build/linux-<type> && ctest --output-on-failure`. Current suite: `client/tests/net/test_worker_smoke.cpp` spawns a real `griz-server --transport=rpc`, runs the hello/hello_ack/ready handshake, and round-trips `q_state`. The test auto-discovers the server binary under `Src/GRIZ4-*/bin_server_opt/griz-server` and the `bar71.pltA` sample database under `Src/test/image/bar71/`; override with `GRIZ_BIN` / `GRIZ_TEST_DB` env vars. Skips cleanly if either artifact is missing (`./build.sh server` produces the binary).
+
+Network layer: `client/src/net/` — `Framing` (big-endian 5-byte header + 16 MiB cap per 02-protocol.md §2.2), `Rendezvous` (parses `$HOME/.griz/rendezvous/*.json`), `Worker` (QProcess spawn → rendezvous poll → QTcpSocket → hello-with-token → hello_ack → ready). Worker runs single-threaded on the creating thread's event loop; the three-thread split from 04-client.md §9 is a later `moveToThread()` refinement that keeps this public API.
+
 ### Server transports
 
 `griz-server` speaks **two transports** selected by `--transport`:

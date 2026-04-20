@@ -47,3 +47,5 @@ private:
 };
 
 } // namespace griz::net
+
+Q_DECLARE_METATYPE(griz::net::Frame)
