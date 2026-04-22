@@ -2,11 +2,19 @@
 
 MCP is single-client-per-server, so a module-level session is the correct
 model.  A ``_griz_factory`` callable allows test injection without patching.
+
+Attach mode (planning/DEMO.md task C): when GRIZ_MCP_ATTACH_RENDEZVOUS
+points at an existing rendezvous JSON file, ``open_database`` skips the
+subprocess spawn and attaches to the server that wrote that file
+(typically the Qt UI). The ``path`` argument is ignored — the peer
+already chose which database to open — and we return the live q_state
+so the LLM sees what's currently loaded.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from typing import Callable
 
 from griz import Griz
@@ -16,6 +24,8 @@ GrizFactory = Callable[..., Griz]
 _session: Griz | None = None
 _griz_factory: GrizFactory = Griz
 
+_ATTACH_ENV = "GRIZ_MCP_ATTACH_RENDEZVOUS"
+
 
 def _set_factory(factory: GrizFactory) -> None:
     """Override the Griz constructor (for testing)."""
@@ -24,12 +34,21 @@ def _set_factory(factory: GrizFactory) -> None:
 
 
 def open_database(path: str) -> str:
-    """Open a database, creating a new Griz session."""
+    """Open a database, creating a new Griz session.
+
+    In attach mode (GRIZ_MCP_ATTACH_RENDEZVOUS set), `path` is ignored
+    and we attach to the peer's server instead. The returned state
+    reflects whatever the peer has open.
+    """
     global _session
     if _session is not None and _session.is_open:
         _session.close()
     _session = _griz_factory()
-    _session.open(path)
+    attach_rv = os.environ.get(_ATTACH_ENV)
+    if attach_rv:
+        _session.attach(attach_rv)
+    else:
+        _session.open(path)
     state = _session.state()
     return json.dumps(state, default=str)
 

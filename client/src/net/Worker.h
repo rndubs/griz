@@ -76,6 +76,12 @@ public:
     bool    isConnected() const { return m_handshakeComplete; }
     QJsonObject serverInfo() const { return m_serverInfo; }
 
+    // Absolute path of the rendezvous file this worker told griz-server to
+    // write. Stable across the session (e.g. "$HOME/.griz/rendezvous/ui-<pid>.json")
+    // so the MCP bridge can attach to the same server. Empty until
+    // launchAndConnect() has spawned the subprocess.
+    QString rendezvousPath() const { return m_rendezvousPath; }
+
     static constexpr const char *kClientProtocolVersion = "1.0";
     static constexpr const char *kClientIdentifier      = "griz-qt-client";
 
@@ -119,6 +125,8 @@ private:
     Framer            *m_framer             = nullptr;
     QTemporaryDir     *m_rendezvousDir      = nullptr;
     QString            m_rendezvousPath;
+    bool               m_rendezvousStable   = false;  // true when we own the
+                                                      // path under $HOME/.griz
 
     QHash<QString, Response> m_responsesById;
     QList<QJsonObject>       m_pendingEvents;

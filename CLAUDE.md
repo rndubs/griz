@@ -37,7 +37,7 @@ Both transports share `server_core_dispatch_line()` in `Src/server_core.c`. All 
 | `Src/server_core.{c,h}` | JSON envelope, output capture, error recording, emitter hook, `server_core_dispatch_line`. |
 | `Src/server_core_startup.{c,h}` | Analysis / OSMesa / DB open — shared by both transports. |
 | `Src/server_stdio.c` | Thin `fgets` loop → `server_core_dispatch_line`. |
-| `Src/server_rpc.{c,h}` | `bind → rendezvous (0600 JSON) → accept → token hello → dispatch`. Single-threaded v0. Dispatch loop drives 20 s heartbeat cadence + 60 s peer-idle detection via `poll()` with a scaled timeout; peer-idle check fires only on a pure poll timeout so queued heartbeats drain first. SIGTERM/SIGINT → `session_ending(signal_term)` + socket shutdown. |
+| `Src/server_rpc.{c,h}` | `bind → rendezvous (0600 JSON) → accept (multi-client up to RPC_MAX_CLIENTS=4) → token hello per client → dispatch`. Single-threaded v0. Response/hello_ack emits route to `current_client_idx`; events and auto-push binary frames broadcast to every authenticated client. Dispatch loop drives per-client 20 s heartbeat cadence + 60 s peer-idle detection via `poll()` over listen_fd + all client fds; peer-idle closes only that client slot. SIGTERM/SIGINT → broadcast `session_ending(signal_term)` + socket shutdown on every slot. |
 | `Src/server_query.{c,h}` | `q_*` builders (state/view/time/materials/results/selection/render/database). |
 | `Src/server_events.{c,h}` | `state_changed` emitter with monotonic `state_seq`. |
 

@@ -52,7 +52,7 @@ class RpcWorker:
 
     def __init__(
         self,
-        database: str | os.PathLike[str],
+        database: str | os.PathLike[str] | None = None,
         *,
         griz_bin: str | os.PathLike[str] | None = None,
         width: int = 1024,
@@ -62,12 +62,35 @@ class RpcWorker:
         shutdown_timeout: float = 5.0,
         rendezvous_timeout: float = 10.0,
         log_buffer: int = 200,
+        attach_rendezvous: str | os.PathLike[str] | None = None,
     ) -> None:
-        self._database = Path(database)
-        if not self._database.exists():
-            raise FileNotFoundError(f"database not found: {self._database}")
+        # Attach mode (DEMO.md task B): skip subprocess spawn, skip DB check,
+        # and point the handshake at an existing rendezvous file written by
+        # another client (e.g. the Qt UI). cleanup() in this mode closes the
+        # socket only — the spawning process owns the server lifetime.
+        self._attach_mode = attach_rendezvous is not None
+        self._attach_rv_path: Path | None = (
+            Path(attach_rendezvous) if attach_rendezvous is not None else None
+        )
 
-        self._griz_bin = str(griz_bin) if griz_bin else _find_griz_server()
+        if self._attach_mode:
+            self._database = Path(database) if database is not None else None
+        else:
+            if database is None:
+                raise ValueError(
+                    "database is required unless attach_rendezvous is set"
+                )
+            self._database = Path(database)
+            if not self._database.exists():
+                raise FileNotFoundError(f"database not found: {self._database}")
+
+        # griz_bin is only used for spawn mode; in attach mode we never spawn
+        # and must not fail when the binary isn't on disk.
+        self._griz_bin: str | None
+        if self._attach_mode:
+            self._griz_bin = str(griz_bin) if griz_bin else None
+        else:
+            self._griz_bin = str(griz_bin) if griz_bin else _find_griz_server()
         self._width = int(width)
         self._height = int(height)
         self._ready_timeout = float(ready_timeout)
@@ -97,10 +120,16 @@ class RpcWorker:
         self._stderr_thread: threading.Thread | None = None
         self._rv_path: Path | None = None
         self._final_returncode: int | None = None
+        # We only created the temp rendezvous dir when we spawned the server
+        # ourselves — attach mode must not clean up a path the UI owns.
+        self._owns_rv_path = False
 
         self.server_info: dict | None = None
 
-        self._spawn()
+        if self._attach_mode:
+            self._attach()
+        else:
+            self._spawn()
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -109,6 +138,7 @@ class RpcWorker:
     def _spawn(self) -> None:
         rv_dir = Path(tempfile.mkdtemp(prefix="griz-rpc-"))
         self._rv_path = rv_dir / "rendezvous.json"
+        self._owns_rv_path = True
 
         cmd = [
             self._griz_bin,
@@ -135,25 +165,92 @@ class RpcWorker:
 
         try:
             rv = self._wait_for_rendezvous()
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            self._sock.connect((rv["host"], int(rv["port"])))
-
-            # Handshake + ready come back on the same socket; start the
-            # reader thread first so frames are routed as they arrive.
-            self._reader_alive = True
-            self._reader_thread = threading.Thread(
-                target=self._reader_loop,
-                daemon=True,
-                name="griz-server-rpc",
+            self._connect_and_handshake(
+                host=rv["host"],
+                port=int(rv["port"]),
+                token=rv["token"],
+                client_identifier="griz-python-rpc",
             )
-            self._reader_thread.start()
-
-            self._do_handshake(rv["token"])
-            self._wait_for_ready()
         except Exception:
             self.cleanup()
             raise
+
+    def _attach(self) -> None:
+        """Attach to a griz-server already spawned by another client.
+
+        Reads the rendezvous file written by the UI (or any prior spawn),
+        connects, handshakes with the token, and waits for a ready event.
+        No subprocess is started and cleanup() will not touch the file.
+        """
+        assert self._attach_rv_path is not None
+        self._rv_path = self._attach_rv_path
+        self._owns_rv_path = False
+
+        try:
+            rv = self._read_attach_rendezvous()
+            self._connect_and_handshake(
+                host=rv["host"],
+                port=int(rv["port"]),
+                token=rv["token"],
+                client_identifier="griz-python-rpc-attach",
+            )
+        except Exception:
+            self.cleanup()
+            raise
+
+    def _read_attach_rendezvous(self) -> dict:
+        """Poll the rendezvous file for attach mode.
+
+        Matches _wait_for_rendezvous's retry-on-partial-read semantics but
+        doesn't care about a subprocess lifecycle — we're reading a file
+        written by a peer we don't own.
+        """
+        assert self._rv_path is not None
+        deadline = time.monotonic() + self._rendezvous_timeout
+        while True:
+            if self._rv_path.exists():
+                try:
+                    data = json.loads(self._rv_path.read_text())
+                    if (
+                        isinstance(data, dict)
+                        and "host" in data
+                        and "port" in data
+                        and "token" in data
+                    ):
+                        return data
+                except (OSError, json.JSONDecodeError):
+                    pass
+            if time.monotonic() >= deadline:
+                raise WorkerError(
+                    f"attach rendezvous file {self._rv_path} was not "
+                    f"readable within {self._rendezvous_timeout}s"
+                )
+            time.sleep(0.05)
+
+    def _connect_and_handshake(
+        self,
+        *,
+        host: str,
+        port: int,
+        token: str,
+        client_identifier: str,
+    ) -> None:
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self._sock.connect((host, port))
+
+        # Handshake + ready come back on the same socket; start the
+        # reader thread first so frames are routed as they arrive.
+        self._reader_alive = True
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            daemon=True,
+            name="griz-server-rpc",
+        )
+        self._reader_thread.start()
+
+        self._do_handshake(token, client_identifier=client_identifier)
+        self._wait_for_ready()
 
     def _wait_for_rendezvous(self) -> dict:
         assert self._rv_path is not None
@@ -293,11 +390,16 @@ class RpcWorker:
     # Handshake / ready
     # ------------------------------------------------------------------ #
 
-    def _do_handshake(self, token: str) -> None:
+    def _do_handshake(
+        self,
+        token: str,
+        *,
+        client_identifier: str = "griz-python-rpc",
+    ) -> None:
         hello = {
             "type": "hello",
             "version": GRIZ_PROTOCOL_VERSION,
-            "client": "griz-python-rpc",
+            "client": client_identifier,
             "token": token,
         }
         self._send_json(hello)
@@ -514,12 +616,26 @@ class RpcWorker:
         return self._final_returncode
 
     def cleanup(self) -> None:
-        """Send quit, close the socket, wait for the subprocess to exit."""
+        """Release resources.
+
+        Spawn mode: send quit, close the socket, wait for the subprocess
+        to exit, unlink the rendezvous tempdir.
+
+        Attach mode: close the socket only. The process and rendezvous
+        file belong to the spawning client and must not be touched.
+        """
         proc = self._proc
         self._proc = None
 
         sock = self._sock
-        if sock is not None and proc is not None and proc.poll() is None:
+        # Only the owning client sends `quit` — in attach mode the remote
+        # process serves other clients and must keep running.
+        if (
+            sock is not None
+            and not self._attach_mode
+            and proc is not None
+            and proc.poll() is None
+        ):
             try:
                 payload = json.dumps({"type": "request", "cmd": "quit"})
                 header = FRAME_HEADER_STRUCT.pack(len(payload), FRAME_KIND_JSON)
@@ -553,7 +669,7 @@ class RpcWorker:
         self._reader_thread = None
         self._stderr_thread = None
 
-        if self._rv_path is not None:
+        if self._owns_rv_path and self._rv_path is not None:
             rv = self._rv_path
             self._rv_path = None
             try:
@@ -564,6 +680,9 @@ class RpcWorker:
                 rv.parent.rmdir()
             except OSError:
                 pass
+        else:
+            # Attach mode: keep the file around; the UI owns it.
+            self._rv_path = None
 
     def __enter__(self) -> "RpcWorker":
         return self
