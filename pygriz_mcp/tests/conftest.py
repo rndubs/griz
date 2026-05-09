@@ -38,6 +38,11 @@ class MockGriz:
         self._open = True
         self._database_path = path
 
+    def attach(self, rendezvous_path):
+        self._open = True
+        self._database_path = None
+        self._attached_to = str(rendezvous_path)
+
     def close(self):
         self._open = False
         self._database_path = None

@@ -51,14 +51,32 @@ build_q_time( Analysis *analy )
     double min_time_value = 0.0;
     double max_time_value = 0.0;
 
-    if ( analy->state_times != NULL && analy->state_count > 0 )
+    /* analy->state_times is declared but never populated anywhere in the
+     * tree — query the database directly. QRY_STATE_TIME takes a 1-based
+     * state number and writes a float (matches flow.c / gui.c usage). */
+    if ( analy->state_count > 0 && analy->db_query != NULL )
     {
         int cur = analy->cur_state;
+        int q;
+        float t = 0.0f;
+
         if ( cur < 0 )                      cur = 0;
         if ( cur >= analy->state_count )    cur = analy->state_count - 1;
-        time_value     = analy->state_times[cur];
-        min_time_value = analy->state_times[0];
-        max_time_value = analy->state_times[analy->state_count - 1];
+
+        q = cur + 1;
+        analy->db_query( analy->db_ident, QRY_STATE_TIME,
+                         (void *) &q, NULL, (void *) &t );
+        time_value = t;
+
+        q = 1;
+        analy->db_query( analy->db_ident, QRY_STATE_TIME,
+                         (void *) &q, NULL, (void *) &t );
+        min_time_value = t;
+
+        q = analy->state_count;
+        analy->db_query( analy->db_ident, QRY_STATE_TIME,
+                         (void *) &q, NULL, (void *) &t );
+        max_time_value = t;
     }
 
     /* Legacy (shipped) keys. */

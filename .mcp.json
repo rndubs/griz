@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "griz": {
+      "command": "uv",
+      "args": ["--directory", "./pygriz_mcp", "run", "griz-mcp"]
+    }
+  }
+}
