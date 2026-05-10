@@ -7,15 +7,38 @@ import json
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.utilities.types import Image
-from griz.exceptions import GrizError
+from griz.exceptions import GrizError, UnknownFieldError
+from griz.results_map import default_map
 
 from griz_mcp import session
 
 mcp = FastMCP("griz-mcp")
 
 
+def _field_families_hint() -> str:
+    """Build the ``show_field`` guidance from the live results map.
+
+    Stays in sync with ``Src/data/results_map.yaml`` automatically — a
+    new family added to the YAML appears in the next error message
+    without touching this file.
+    """
+    parts: list[str] = []
+    for family, components in default_map().describe().items():
+        if components is None:
+            parts.append(f"{family} (scalar)")
+        else:
+            parts.append(f"{family} ({'/'.join(components)})")
+    return (
+        "Curated families: " + ", ".join(parts) + ". "
+        "For raw Mili names like 'sx', 'seff', 'eps' (anything from "
+        "list_fields()), call show_field(name=<raw>) WITHOUT a component."
+    )
+
+
 def _err(e: Exception) -> ToolError:
     """Translate a domain exception to a ToolError."""
+    if isinstance(e, UnknownFieldError):
+        return ToolError(f"UnknownFieldError: {e}. {_field_families_hint()}")
     return ToolError(f"{type(e).__name__}: {e}")
 
 
@@ -25,17 +48,30 @@ def _err(e: Exception) -> ToolError:
 
 
 @mcp.tool
-def open_database(path: str) -> str:
+def open_database(path: str | None = None) -> str:
     """Open a Mili simulation database for visualization.
 
-    `path` is the path to a Mili plotfile, typically ending in `.plt` or
-    `.pltA` (e.g. ``/path/to/simulation/run.pltA``). Returns the initial
-    viewer state including time range, material count, and viewport size.
-    Must be called before any other tool.
+    Two modes:
+
+    * **Attach** (when a Qt UI is already running): the MCP server
+      attaches to the UI's griz-server. ``path`` is *optional* and
+      ignored — the UI already chose which database to open. Call
+      ``session_status()`` first to check whether a UI is up.
+
+    * **Spawn** (no UI running): ``path`` is required and points at a
+      Mili plotfile (e.g. ``/path/to/run.pltA``). The MCP server
+      spawns its own headless griz-server.
+
+    Idempotent in attach mode: re-calling while already attached to the
+    same live UI returns the current state without flickering the
+    viewport.
+
+    Returns the viewer state JSON: time range, materials, viewport size,
+    current field. Must succeed before any other tool can run.
     """
     try:
         return session.open_database(path)
-    except (GrizError, FileNotFoundError, OSError) as e:
+    except (GrizError, FileNotFoundError, OSError, RuntimeError) as e:
         raise _err(e) from e
 
 
@@ -57,14 +93,25 @@ def close_database() -> str:
 def show_field(name: str, component: str | None = None) -> str:
     """Display a result field on the mesh with a color map.
 
-    Common fields and components:
-      stress: xx, yy, zz, xy, yz, zx, von_mises, pressure
-      strain: xx, yy, zz, xy, yz, zx
-      displacement: x, y, z, magnitude
-      temperature: (no component needed — scalar field)
+    Two ways to call this:
 
-    Example: ``show_field("stress", "von_mises")`` shows von Mises stress.
-    Use ``list_fields()`` to see all available fields in the current database.
+    1. Curated families (recommended for human-readable code):
+         stress: xx, yy, zz, xy, yz, zx, von_mises, pressure
+         strain: xx, yy, zz, xy, yz, zx
+         displacement: x, y, z, magnitude
+         velocity / acceleration: x, y, z, magnitude
+         temperature: (no component — scalar)
+       e.g. ``show_field("stress", "von_mises")``.
+
+    2. Raw Mili names from ``list_fields()``: pass any ``name`` value
+       returned by ``list_fields()`` (e.g. ``sx``, ``seff``, ``eps``,
+       ``dispmag``) as a single arg, no component. Useful when the
+       desired field isn't in the curated families above.
+       e.g. ``show_field("sx")`` for X-component stress.
+
+    Mixing modes is rejected: passing a component alongside an unknown
+    family is treated as a typo.
+
     Returns the updated viewer state.
     """
     try:
@@ -266,6 +313,22 @@ def get_state() -> str:
         return session.get_status()
     except GrizError as e:
         raise _err(e) from e
+
+
+@mcp.tool
+def session_status() -> str:
+    """Report the MCP session's lifecycle status without sending commands.
+
+    Returns a JSON object describing whether a session is open, whether
+    it's in attach or spawn mode, the resolved rendezvous path (if any
+    live UI exists), the UI's server PID/host/port, and the open
+    database path. Pure local inspection — safe to call before
+    ``open_database``.
+
+    Use this to answer "is the Qt UI up?" or "am I attached to the
+    same UI as last time?" without shelling out to ``pgrep`` or ``ls``.
+    """
+    return session.status()
 
 
 @mcp.tool

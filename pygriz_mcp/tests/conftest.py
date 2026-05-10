@@ -51,6 +51,10 @@ class MockGriz:
     def is_open(self):
         return self._open
 
+    @property
+    def database_path(self):
+        return self._database_path
+
     def state(self):
         return dict(self._state)
 

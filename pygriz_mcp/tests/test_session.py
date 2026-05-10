@@ -172,10 +172,112 @@ class TestOpenDatabaseAttachMode:
         session.open_database("/ignored/path.plt")
         assert mock_griz[0]._attached_to == str(live)
 
-    def test_attach_requested_but_nothing_live_raises(
+    def test_auto_with_nothing_live_falls_through_to_spawn(
+        self, mock_griz, tmp_path, monkeypatch
+    ):
+        """`auto` is a soft hint — if no UI is up we just spawn."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv(session._ATTACH_ENV, "auto")
+        session.open_database("/some/db.plt")
+        assert mock_griz[0]._database_path == "/some/db.plt"
+        assert getattr(mock_griz[0], "_attached_to", None) is None
+
+    def test_auto_case_insensitive(self, mock_griz, tmp_path, monkeypatch):
+        """Case shouldn't matter for the sentinel."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv(session._ATTACH_ENV, "AUTO")
+        session.open_database("/some/db.plt")
+        assert mock_griz[0]._database_path == "/some/db.plt"
+
+    def test_explicit_stale_path_still_raises(
+        self, mock_griz, tmp_path, monkeypatch
+    ):
+        """A user who names a specific path gets a clear error if it's stale."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv(
+            session._ATTACH_ENV, str(tmp_path / "ui-stale.json")
+        )
+        with pytest.raises(RuntimeError, match="no live griz-server"):
+            session.open_database("/some/db.plt")
+
+    def test_path_none_in_attach_mode_attaches(
+        self, mock_griz, tmp_path, monkeypatch
+    ):
+        """F5: `path=None` is valid in attach mode."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        rv_dir = tmp_path / ".griz" / "rendezvous"
+        live = rv_dir / "ui-live.json"
+        _write_rendezvous(live, os.getpid())
+        monkeypatch.setenv(session._ATTACH_ENV, "auto")
+        session.open_database()
+        assert mock_griz[0]._attached_to == str(live)
+
+    def test_path_none_in_spawn_mode_raises(self, mock_griz, monkeypatch):
+        """F5: `path=None` outside attach mode is a clear error."""
+        monkeypatch.delenv(session._ATTACH_ENV, raising=False)
+        with pytest.raises(RuntimeError, match="path"):
+            session.open_database()
+
+    def test_idempotent_attach_reuses_session(
+        self, mock_griz, tmp_path, monkeypatch
+    ):
+        """F5: re-calling open_database in attach mode shouldn't tear down."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        rv_dir = tmp_path / ".griz" / "rendezvous"
+        live = rv_dir / "ui-live.json"
+        _write_rendezvous(live, os.getpid())
+        monkeypatch.setenv(session._ATTACH_ENV, "auto")
+        session.open_database()
+        session.open_database()
+        # Second call should not have spawned a new MockGriz.
+        assert len(mock_griz) == 1
+        assert mock_griz[0].is_open
+
+
+class TestSessionStatus:
+    """F4: griz_session_status MCP tool — pure local introspection."""
+
+    def test_idle_when_no_session(self, monkeypatch):
+        monkeypatch.delenv(session._ATTACH_ENV, raising=False)
+        result = json.loads(session.status())
+        assert result["session_open"] is False
+        assert result["mode"] == "idle"
+        assert result["attach_env"] is None
+        assert result["live_rendezvous"] is None
+
+    def test_reports_live_rendezvous_even_when_idle(
+        self, tmp_path, monkeypatch
+    ):
+        """Status should surface a live UI even if MCP hasn't attached yet."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        rv_dir = tmp_path / ".griz" / "rendezvous"
+        live = rv_dir / "ui-live.json"
+        _write_rendezvous(live, os.getpid())
+        monkeypatch.setenv(session._ATTACH_ENV, "auto")
+        result = json.loads(session.status())
+        assert result["session_open"] is False
+        assert result["mode"] == "idle"
+        assert result["live_rendezvous"] == str(live)
+        assert result["server_pid"] == os.getpid()
+
+    def test_attach_mode_after_open(
         self, mock_griz, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("HOME", str(tmp_path))
+        rv_dir = tmp_path / ".griz" / "rendezvous"
+        live = rv_dir / "ui-live.json"
+        _write_rendezvous(live, os.getpid())
         monkeypatch.setenv(session._ATTACH_ENV, "auto")
-        with pytest.raises(RuntimeError, match="no live griz-server"):
-            session.open_database("/some/db.plt")
+        session.open_database()
+        result = json.loads(session.status())
+        assert result["session_open"] is True
+        assert result["mode"] == "attach"
+        assert result["rendezvous"] == str(live)
+
+    def test_spawn_mode_after_open(self, mock_griz, monkeypatch):
+        monkeypatch.delenv(session._ATTACH_ENV, raising=False)
+        session.open_database("/fake/db.plt")
+        result = json.loads(session.status())
+        assert result["session_open"] is True
+        assert result["mode"] == "spawn"
+        assert result["database"] == "/fake/db.plt"

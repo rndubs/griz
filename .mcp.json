@@ -2,7 +2,8 @@
   "mcpServers": {
     "griz": {
       "command": "uv",
-      "args": ["--directory", "./pygriz_mcp", "run", "griz-mcp"]
+      "args": ["--directory", "./pygriz_mcp", "run", "griz-mcp"],
+      "env": { "GRIZ_MCP_ATTACH_RENDEZVOUS": "auto" }
     }
   }
 }

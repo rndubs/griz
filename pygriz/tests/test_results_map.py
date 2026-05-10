@@ -75,6 +75,24 @@ def test_components_unknown_field_raises():
         m.components("not_a_field")
 
 
+def test_describe_returns_families_with_components():
+    """describe() drives the MCP layer's error hint — must stay accurate."""
+    m = ResultsMap()
+    described = m.describe()
+    # Scalars surface as None; fielded fields list their primary components.
+    assert described["temperature"] is None
+    assert described["stress"] is not None
+    assert "xx" in described["stress"]
+    assert "von_mises" in described["stress"]
+    # Aliases must not leak into the primary listing.
+    assert "vm" not in described["stress"]
+    assert "mag" not in (described["displacement"] or [])
+    # All YAML families are present.
+    expected = {"stress", "strain", "temperature",
+                "displacement", "velocity", "acceleration"}
+    assert expected.issubset(set(described.keys()))
+
+
 def test_label_for_scalar_falls_back_to_field_name():
     m = ResultsMap()
     assert m.label("temperature") == "temperature"
