@@ -172,6 +172,47 @@ class TestRpcSmokeWithRealDatabase:
         state = _json_from(result)
         assert "time_state" in state["time"]
 
+    def test_show_plot_labels_round_trip(self):
+        mcp = self._mcp()
+        _call_tool(mcp, "open_database", {"path": str(DEFAULT_DB)})
+        state = _json_from(
+            _call_tool(mcp, "show_plot_labels", {"names": ["title", "time"]})
+        )
+        toggles = state["render"]["toggles"]
+        assert toggles["title"] is True
+        assert toggles["time"] is True
+
+        state = _json_from(
+            _call_tool(mcp, "hide_plot_labels", {"names": ["title"]})
+        )
+        toggles = state["render"]["toggles"]
+        assert toggles["title"] is False
+        assert toggles["time"] is True
+
+    def test_set_plot_labels_typed(self):
+        mcp = self._mcp()
+        _call_tool(mcp, "open_database", {"path": str(DEFAULT_DB)})
+        state = _json_from(
+            _call_tool(
+                mcp,
+                "set_plot_labels",
+                {"title": True, "edges": False, "cmap": True},
+            )
+        )
+        toggles = state["render"]["toggles"]
+        assert toggles["title"] is True
+        assert toggles["cmap"] is True
+        assert toggles["edges"] is False
+
+    def test_show_plot_labels_unknown_name(self):
+        mcp = self._mcp()
+        _call_tool(mcp, "open_database", {"path": str(DEFAULT_DB)})
+        with pytest.raises(Exception) as exc_info:
+            _call_tool(mcp, "show_plot_labels", {"names": ["plottytwoshoes"]})
+        msg = str(exc_info.value)
+        assert "unknown render toggle" in msg or "ValueError" in msg
+        assert "title" in msg
+
     def test_screenshot_returns_png(self):
         mcp = self._mcp()
         _call_tool(mcp, "open_database", {"path": str(DEFAULT_DB)})

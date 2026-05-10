@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from griz.exceptions import GrizConnectionError
 from griz.field import FieldAPI
 from griz.materials import MaterialsAPI
+from griz.render import RenderAPI
 from griz.selection import SelectionAPI
 from griz.time_ import TimeAPI
 from griz.view import ViewAPI
@@ -60,6 +61,7 @@ class Griz:
         self._time = TimeAPI(self)
         self._materials = MaterialsAPI(self)
         self._selection = SelectionAPI(self)
+        self._render = RenderAPI(self)
 
         if database is not None:
             self.open(database)
@@ -242,6 +244,10 @@ class Griz:
     @property
     def selection(self) -> SelectionAPI:
         return self._selection
+
+    @property
+    def render(self) -> RenderAPI:
+        return self._render
 
     # ------------------------------------------------------------------ #
     # Introspection

@@ -342,6 +342,14 @@ build_q_render( Analysis *analy )
     cJSON_AddBoolToObject( toggles, "title",  analy->show_title );
     cJSON_AddBoolToObject( toggles, "bbox",   analy->show_bbox );
     cJSON_AddBoolToObject( toggles, "edges",  analy->show_edges );
+    /* Vocabulary expansion (planning/render-toggles.md R7): expose every
+     * plot-decoration toggle the `on`/`off` parser in interpret.c
+     * accepts so RenderAPI can read back what it sets. */
+    cJSON_AddBoolToObject( toggles, "path",   analy->show_title_path );
+    cJSON_AddBoolToObject( toggles, "cscale", analy->show_colorscale );
+    cJSON_AddBoolToObject( toggles, "scale",  analy->show_scale );
+    cJSON_AddBoolToObject( toggles, "date",   analy->show_datetime );
+    cJSON_AddBoolToObject( toggles, "tinfo",  analy->show_tinfo );
     cJSON_AddItemToObject( data,    "toggles", toggles );
 
     /* Griz does not currently expose a colormap name; report null so

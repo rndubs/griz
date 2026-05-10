@@ -272,6 +272,99 @@ def list_materials() -> str:
 
 
 # ------------------------------------------------------------------ #
+# Render tools (plot decorations / on-off toggles)
+# ------------------------------------------------------------------ #
+
+
+@mcp.tool
+def show_plot_labels(names: list[str]) -> str:
+    """Turn on plot decorations on the rendered viewport.
+
+    Valid names: ``title`` (problem title), ``time`` (time/state
+    readout), ``cmap`` (colormap legend), ``minmax`` (cumulative
+    min/max readout), ``coord`` (axis triad), ``bbox`` (bounding box),
+    ``edges`` (mesh element edges), ``path`` (database path under the
+    title), ``cscale`` (color scale numeric labels), ``scale``
+    (displacement scale), ``date`` (current datetime), ``tinfo``
+    (time-step info). Multiple toggles can be enabled in a single
+    call. Returns the updated viewer state — the ``render.toggles``
+    block reflects the new values.
+    """
+    try:
+        griz = session.require_session()
+        result = griz.render.show(*names)
+        return json.dumps(result, default=str)
+    except (GrizError, RuntimeError, ValueError) as e:
+        raise _err(e) from e
+
+
+@mcp.tool
+def hide_plot_labels(names: list[str]) -> str:
+    """Turn off plot decorations on the rendered viewport.
+
+    Same name vocabulary as ``show_plot_labels``: ``title``, ``time``,
+    ``cmap``, ``minmax``, ``coord``, ``bbox``, ``edges``, ``path``,
+    ``cscale``, ``scale``, ``date``, ``tinfo``. Multiple toggles can
+    be disabled in a single call. Returns the updated viewer state.
+    """
+    try:
+        griz = session.require_session()
+        result = griz.render.hide(*names)
+        return json.dumps(result, default=str)
+    except (GrizError, RuntimeError, ValueError) as e:
+        raise _err(e) from e
+
+
+@mcp.tool
+def set_plot_labels(
+    title: bool | None = None,
+    time: bool | None = None,
+    cmap: bool | None = None,
+    minmax: bool | None = None,
+    coord: bool | None = None,
+    bbox: bool | None = None,
+    edges: bool | None = None,
+    path: bool | None = None,
+    cscale: bool | None = None,
+    scale: bool | None = None,
+    date: bool | None = None,
+    tinfo: bool | None = None,
+) -> str:
+    """Set plot decorations explicitly via named booleans.
+
+    Each argument controls one toggle: ``True`` enables it, ``False``
+    disables it, ``None`` (the default) leaves it untouched. Typed
+    counterpart to ``show_plot_labels`` / ``hide_plot_labels`` — same
+    vocabulary, named parameters. Returns the updated viewer state.
+
+    Current toggle state lives in ``get_state().render.toggles``.
+    """
+    try:
+        griz = session.require_session()
+        flags: dict[str, bool] = {}
+        for k, v in (
+            ("title", title),
+            ("time", time),
+            ("cmap", cmap),
+            ("minmax", minmax),
+            ("coord", coord),
+            ("bbox", bbox),
+            ("edges", edges),
+            ("path", path),
+            ("cscale", cscale),
+            ("scale", scale),
+            ("date", date),
+            ("tinfo", tinfo),
+        ):
+            if v is not None:
+                flags[k] = bool(v)
+        result = griz.render.set_toggles(**flags)
+        return json.dumps(result, default=str)
+    except (GrizError, RuntimeError, ValueError) as e:
+        raise _err(e) from e
+
+
+# ------------------------------------------------------------------ #
 # Screenshot
 # ------------------------------------------------------------------ #
 

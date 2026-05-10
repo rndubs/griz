@@ -9,6 +9,7 @@ from griz.exceptions import (
 )
 from griz.field import FieldAPI
 from griz.materials import MaterialsAPI
+from griz.render import RenderAPI
 from griz.results_map import ResultsMap, default_map
 from griz.selection import SelectionAPI
 from griz.rpc_worker import RpcWorker
@@ -26,6 +27,7 @@ __all__ = [
     "GrizConnectionError",
     "GrizError",
     "MaterialsAPI",
+    "RenderAPI",
     "RenderingError",
     "ResultsMap",
     "RpcWorker",

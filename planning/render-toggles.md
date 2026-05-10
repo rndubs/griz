@@ -13,14 +13,14 @@ query is widened.
 
 ## 0. Implementation Tracker
 
-- [ ] **R1** — `RenderAPI` in `pygriz/src/griz/render.py` (`show`, `hide`, `set_toggles`, `state`)
-- [ ] **R2** — Wire `Griz.render` property + `__init__` re-export
-- [ ] **R3** — Unit + smoke tests for `RenderAPI` (stdio + RPC parity)
-- [ ] **R4** — MCP tools `set_plot_labels` / `show_plot_labels` / `hide_plot_labels`
-- [ ] **R5** — MCP smoke-test parity (`pygriz_mcp/tests/test_smoke.py`, `test_smoke_rpc.py`)
-- [ ] **R6** — Update `tmp/sx_time_history.py` to use `g.render.show(...)` instead of `g.raw(...)` (proof point)
-- [ ] **R7** — Audit `Src/interpret.c` `on`/`off` vocabulary; widen `q_state` toggle block + `RenderAPI` whitelist
-- [ ] **R8** — Update CLAUDE.md (CLI gotcha tip stays accurate; mention typed path)
+- [x] **R1** — `RenderAPI` in `pygriz/src/griz/render.py` (`show`, `hide`, `set_toggles`, `state`)
+- [x] **R2** — Wire `Griz.render` property + `__init__` re-export
+- [x] **R3** — Unit + smoke tests for `RenderAPI` (stdio + RPC parity) — 19 passing in `pygriz/tests/test_render*.py`
+- [x] **R4** — MCP tools `set_plot_labels` / `show_plot_labels` / `hide_plot_labels`
+- [x] **R5** — MCP smoke-test parity (`pygriz_mcp/tests/test_smoke.py`, `test_smoke_rpc.py`) — 33 passing both transports
+- [x] **R6** — Update `tmp/sx_time_history.py` to use `g.render.show(...)` instead of `g.raw(...)` (proof point)
+- [x] **R7** — Audit `Src/interpret.c` `on`/`off` vocabulary; widen `q_state` toggle block + `RenderAPI` whitelist. Added 5 toggles (`path`, `cscale`, `scale`, `date`, `tinfo`) in `Src/server_query.c` and `RenderAPI.KNOWN`; round-trip guarded by `test_expanded_vocabulary_round_trips`.
+- [x] **R8** — Update CLAUDE.md (CLI gotcha tip stays accurate; mention typed path)
 
 ---
 

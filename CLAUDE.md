@@ -7,6 +7,20 @@ Keep the MCP.md file tidy.
 
 The top-level checklist lives in `## 0. Implementation Status` at lines 1–84 of `./planning/MCP.md` — read just that range (`Read` with `offset=1, limit=84`) to check/update progress without pulling the full design doc.
 
+### Typed APIs vs `raw_command`
+
+Plot-label toggles (`title`, `time`, `cmap`, `minmax`, `coord`, `bbox`,
+`edges`) have a typed surface — prefer it over the raw escape hatch:
+
+| | Typed | Escape hatch |
+|---|---|---|
+| pygriz | `g.render.show("title", "time")` | `g.raw("on title time")` |
+| MCP | `show_plot_labels(["title", "time"])` / `set_plot_labels(title=True, ...)` | `raw_command("on title time")` |
+
+Same vocabulary in both directions; reads back via `g.render.state()`
+or `get_state().render.toggles`. Vocabulary expansion lives in
+`planning/render-toggles.md` (R7).
+
 ## UI Implementation
 
 Planning checklist lives in `## 0. MVP Implementation Tracker` at lines 1–88 of `./planning/UI.md` — read just that range to check/update status. Update it after landing UI work.
