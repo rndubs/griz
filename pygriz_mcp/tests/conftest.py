@@ -83,6 +83,17 @@ class MockGriz:
 
 
 @pytest.fixture(autouse=True)
+def _scrub_attach_env(monkeypatch):
+    """Scrub ``GRIZ_MCP_ATTACH_RENDEZVOUS`` so tests never silently attach to
+    a live UI when the caller's shell has the user-facing .mcp.json default
+    set. Lives in its own fixture (separate from ``_reset_session``) because
+    test modules redefine ``_reset_session`` to install custom factories,
+    which would shadow this scrub if it lived there.
+    """
+    monkeypatch.delenv("GRIZ_MCP_ATTACH_RENDEZVOUS", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_session():
     """Reset the module-level session before each test."""
     session.reset()
