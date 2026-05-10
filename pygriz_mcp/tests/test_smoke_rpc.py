@@ -224,9 +224,10 @@ class TestRpcSmokeWithRealDatabase:
         mcp = self._mcp()
         _call_tool(mcp, "open_database", {"path": str(DEFAULT_DB)})
         result = _call_tool(mcp, "animate", {"start": 0, "end": 3, "step": 1})
-        frames = _json_from(result)
-        assert isinstance(frames, list)
-        assert len(frames) == 4
+        payload = _json_from(result)
+        assert isinstance(payload, dict)
+        assert payload["frame_count"] == 4
+        assert "time" in payload["final_state"]
 
     def test_raw_command(self):
         mcp = self._mcp()

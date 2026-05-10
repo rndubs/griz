@@ -209,12 +209,21 @@ def animate(
     controls the increment (use negative to go backward). `delay` is
     seconds to pause between frames (useful for visual pacing). Call
     ``screenshot()`` separately to capture the final frame as an image.
-    Returns a JSON array of per-frame viewer states.
+
+    Returns ``{"frame_count": N, "final_state": <viewer state>}``.
+    Per-frame state is intentionally not shipped — the static catalogs
+    (results, materials) repeat unchanged on every frame and dominate
+    payload size. Call ``get_state()`` mid-animation if you need a
+    snapshot.
     """
     try:
         griz = session.require_session()
         frames = griz.time.animate(start=start, end=end, step=step, delay=delay)
-        return json.dumps(frames, default=str)
+        final_state = frames[-1] if frames else griz.state()
+        return json.dumps(
+            {"frame_count": len(frames), "final_state": final_state},
+            default=str,
+        )
     except (GrizError, RuntimeError, ValueError) as e:
         raise _err(e) from e
 
