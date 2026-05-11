@@ -36,8 +36,16 @@
  * emitter that length-prefixes `buf` into a kind=0x01 frame on the
  * socket. `buf` is a UTF-8 JSON object, `len` is strlen(buf), and the
  * emitter must not hold onto `buf` across the call.
+ *
+ * `is_response` is a hint for multi-client transports (RPC multi-client
+ * mode): 1 means "this frame is a response or hello_ack intended for the
+ * currently-dispatching client only"; 0 means "this frame is an
+ * unsolicited event (state_changed, session_ending, etc.) and should be
+ * broadcast to every connected client". Single-client transports
+ * (stdio) ignore the flag.
  */
-typedef void (*ServerLineEmitter)( const char *buf, size_t len, void *ctx );
+typedef void (*ServerLineEmitter)( const char *buf, size_t len,
+                                   int is_response, void *ctx );
 
 /* Install a new emitter. Passing NULL restores the built-in stdout
  * emitter. The previous emitter/ctx are not returned; callers that

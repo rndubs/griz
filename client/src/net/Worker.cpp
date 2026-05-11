@@ -2,15 +2,52 @@
 
 #include "Rendezvous.h"
 
+#include <QCoreApplication>
 #include <QDeadlineTimer>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QTcpSocket>
 #include <QTimer>
 
 namespace griz::net {
+
+namespace {
+
+// Pick a rendezvous path the MCP bridge can find. Prefer
+// "$HOME/.griz/rendezvous/ui-<pid>.json" so a user can export
+// GRIZ_MCP_ATTACH_RENDEZVOUS=<that path> without parsing logs; fall back
+// to a unique tempfile when $HOME/.griz/rendezvous isn't writable.
+// On return, *usedStableDir tells the caller whether cleanup should
+// unlink the file (stable dir) or leave QTemporaryDir to handle it.
+QString chooseRendezvousPath(QTemporaryDir **fallbackDir, bool *usedStableDir) {
+    *usedStableDir = false;
+    const QString home = QDir::homePath();
+    if (!home.isEmpty()) {
+        const QString dirPath = home + QStringLiteral("/.griz/rendezvous");
+        QDir dir;
+        if (dir.mkpath(dirPath)) {
+            QFileInfo info(dirPath);
+            if (info.isDir() && info.isWritable()) {
+                *usedStableDir = true;
+                return dirPath + QStringLiteral("/ui-%1.json")
+                    .arg(QCoreApplication::applicationPid());
+            }
+        }
+    }
+    *fallbackDir = new QTemporaryDir();
+    (*fallbackDir)->setAutoRemove(true);
+    if (!(*fallbackDir)->isValid()) {
+        return {};
+    }
+    return (*fallbackDir)->filePath(QStringLiteral("rendezvous.json"));
+}
+
+} // namespace
 
 Worker::Worker(QObject *parent) : QObject(parent) {}
 
@@ -25,13 +62,21 @@ bool Worker::launchAndConnect(const QString &serverBinary,
                               int timeoutMs) {
     QDeadlineTimer deadline(timeoutMs);
 
-    m_rendezvousDir = new QTemporaryDir();
-    m_rendezvousDir->setAutoRemove(true);
-    if (!m_rendezvousDir->isValid()) {
-        setError(QStringLiteral("cannot create temp dir: %1").arg(m_rendezvousDir->errorString()));
+    m_rendezvousDir  = nullptr;
+    m_rendezvousStable = false;
+    m_rendezvousPath = chooseRendezvousPath(&m_rendezvousDir,
+                                            &m_rendezvousStable);
+    if (m_rendezvousPath.isEmpty()) {
+        setError(QStringLiteral("cannot select rendezvous path"));
         return false;
     }
-    m_rendezvousPath = m_rendezvousDir->filePath(QStringLiteral("rendezvous.json"));
+    // Pre-clean any leftover file from a prior crashed session at the same PID.
+    QFile::remove(m_rendezvousPath);
+    // Log the rendezvous path so users can point MCP at it without having to
+    // scrape internal state (DEMO.md task A).
+    fprintf(stderr,
+            "griz-client: rendezvous=%s (export GRIZ_MCP_ATTACH_RENDEZVOUS to attach MCP)\n",
+            m_rendezvousPath.toLocal8Bit().constData());
 
     const QStringList args {
         QStringLiteral("--transport=rpc"),
@@ -280,10 +325,16 @@ void Worker::shutdown(int timeoutMs) {
         m_framer->deleteLater();
         m_framer = nullptr;
     }
+    if (m_rendezvousStable && !m_rendezvousPath.isEmpty()) {
+        // Server unlinks on clean exit; belt-and-suspenders for crash-exit.
+        QFile::remove(m_rendezvousPath);
+    }
     if (m_rendezvousDir) {
         delete m_rendezvousDir;
         m_rendezvousDir = nullptr;
     }
+    m_rendezvousStable = false;
+    m_rendezvousPath.clear();
 
     m_handshakeComplete = false;
     m_readyReceived     = false;

@@ -4151,20 +4151,56 @@ is_nodal_result( Result_type result_id )
  * Build a cJSON object with { results: [...], current: ... } from
  * the primal and derived result hash tables.
  */
+/* Resolve a human-readable title for a derived result entry by walking
+ * Derived_result -> first non-empty srec_map -> Subrecord_result[0]
+ * -> candidate->long_names[index]. Returns NULL on any missing link. */
+static const char *
+derived_long_name( const Derived_result *p_dr )
+{
+    int i;
+
+    if ( p_dr == NULL || p_dr->srec_map == NULL || p_dr->srec_ids == NULL )
+        return NULL;
+
+    for ( i = 0; i < p_dr->srec_id_cnt; i++ )
+    {
+        int sid = p_dr->srec_ids[i];
+        const Subrecord_result *p_sr;
+        const char *name;
+
+        if ( p_dr->srec_map[sid].qty <= 0 )
+            continue;
+        p_sr = (const Subrecord_result *) p_dr->srec_map[sid].list;
+        if ( p_sr == NULL || p_sr->candidate == NULL
+             || p_sr->candidate->long_names == NULL )
+            continue;
+        name = p_sr->candidate->long_names[p_sr->index];
+        if ( name != NULL && name[0] != '\0' )
+            return name;
+    }
+    return NULL;
+}
+
 static void
 server_add_htable_results( void *arr_v, Hash_table *ht,
                            const char *origin_label )
 {
     cJSON *arr = (cJSON *) arr_v;
-    int bucket, i;
+    int bucket;
     Htable_entry *p_hte;
+    Bool_type is_derived;
 
     if ( ht == NULL || ht->qty_entries == 0 )
         return;
 
+    is_derived = ( origin_label != NULL
+                   && strcmp( origin_label, "derived" ) == 0 );
+
     /* Walk all hash table buckets and entries.  The key is the result
-     * name string.  For primal results, data points to a Primal_result
-     * that has a long_name; for derived results, we use just the key. */
+     * name string.  Primal entries point at Primal_result (use
+     * long_name); derived entries point at Derived_result (walk to the
+     * supporting candidate's long_names). The two structs share no
+     * layout — casting a Derived_result to Primal_result reads garbage. */
     for ( bucket = 0; bucket < ht->size; bucket++ )
     {
         for ( p_hte = ht->table[bucket]; p_hte != NULL; p_hte = p_hte->next )
@@ -4175,12 +4211,19 @@ server_add_htable_results( void *arr_v, Hash_table *ht,
             if ( p_hte->key == NULL )
                 continue;
 
-            /* Try to get a descriptive title from the Primal_result. */
             if ( p_hte->data != NULL )
             {
-                Primal_result *pr = (Primal_result *) p_hte->data;
-                if ( pr->long_name != NULL && pr->long_name[0] != '\0' )
-                    title = pr->long_name;
+                if ( is_derived )
+                {
+                    title = derived_long_name(
+                                (const Derived_result *) p_hte->data );
+                }
+                else
+                {
+                    Primal_result *pr = (Primal_result *) p_hte->data;
+                    if ( pr->long_name != NULL && pr->long_name[0] != '\0' )
+                        title = pr->long_name;
+                }
             }
 
             entry = cJSON_CreateObject();

@@ -2,17 +2,19 @@
  * server_rpc.c - Length-framed RPC transport for griz-server.
  *
  * See server_rpc.h for the entry point contract and planning/ui-design/
- * 02-protocol.md for the wire format.
+ * 02-protocol.md for the wire format. Multi-client support (up to
+ * RPC_MAX_CLIENTS concurrent peers) is documented in planning/DEMO.md
+ * task D — the server keeps its listen socket open after the first
+ * accept so a second client (e.g. griz-mcp in attach mode) can share the
+ * same Analysis/OSMesa state.
  *
- * v0 shape: single-threaded, single-connection. The RPC loop hands
- * every decoded JSON frame straight to server_core_dispatch_line(),
- * which is the same dispatcher the stdio transport uses. Heartbeats
- * (kind=0x03) echo the client's 8-byte timestamp back so the client
- * can compute RTT, and the server also emits its own heartbeats every
- * 20 s of outbound idle (02-protocol.md §2.4). 60 s of inbound silence
- * closes the connection with session_ending(reason="peer_idle").
- * Binary kind (0x02) is not yet accepted from the client; the render /
- * frame-push pipeline (Phase 3) will drive it from the server side.
+ * Routing:
+ *   - Responses and hello_ack go to the currently-dispatching client
+ *     only. The line emitter consults g_rpc.current_client_idx.
+ *   - state_changed / session_ending events and binary auto-push frames
+ *     broadcast to every authenticated client. Signal-term
+ *     session_ending broadcasts; per-client peer_idle is sent only to
+ *     the offending client.
  *
  * Post-MVP (tracked in planning/UI.md § Phase 2):
  *   - Three-thread split (command / render / I-O) with bounded queues.
@@ -69,18 +71,51 @@
 #define RPC_POLL_TICK_MS          (1 * 1000)   /* wake up at least once a second so the
                                                   signal handler and timers get serviced */
 
+/* --- Multi-client cap. -------------------------------------------- */
+/* DEMO.md task D: 2 is the real-world case (Qt UI + MCP); 4 is a safety
+ * cap so a misbehaving peer can't exhaust slots. */
+#define RPC_MAX_CLIENTS           4
+
 /* --- Connection state --------------------------------------------- */
 
 typedef struct {
-    int       fd;                             /* connected client socket */
-    char      token_b64[RPC_TOKEN_B64_LEN];   /* rendezvous token, NUL-terminated */
-    long long last_inbound_ms;                /* monotonic ms of last received frame */
-    long long last_outbound_ms;               /* monotonic ms of last sent frame */
-} RpcContext;
+    int       fd;                             /* -1 means slot empty */
+    int       authenticated;                  /* 0 until hello + token validated */
+    long long last_inbound_ms;
+    long long last_outbound_ms;
+} RpcClient;
 
-/* Module-level singleton so the signal handler can reach the socket. */
-static RpcContext g_rpc = { -1, { 0 }, 0, 0 };
+typedef struct {
+    int        listen_fd;
+    char       token_b64[RPC_TOKEN_B64_LEN];
+    RpcClient  clients[RPC_MAX_CLIENTS];
+    /* Index of the client currently being dispatched; response-style
+     * emits target this client only. -1 when no dispatch is active
+     * (e.g. during signal-term broadcast). */
+    int        current_client_idx;
+    int        startup_done;
+} RpcServer;
+
+/* Module-level singleton so the signal handler can reach every fd. */
+static RpcServer g_rpc;
 static volatile sig_atomic_t g_signal_term_pending = 0;
+
+static void
+rpc_server_init( RpcServer *s )
+{
+    int i;
+    s->listen_fd = -1;
+    s->token_b64[0] = '\0';
+    s->current_client_idx = -1;
+    s->startup_done = 0;
+    for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
+    {
+        s->clients[i].fd               = -1;
+        s->clients[i].authenticated    = 0;
+        s->clients[i].last_inbound_ms  = 0;
+        s->clients[i].last_outbound_ms = 0;
+    }
+}
 
 /* Monotonic-clock milliseconds. Used for heartbeat and peer-idle
  * bookkeeping; CLOCK_MONOTONIC is immune to wall-clock jumps. */
@@ -179,15 +214,20 @@ write_exact( int fd, const void *buf, size_t len )
     return 0;
 }
 
-/* Write one length-prefixed frame. On success, resets the outbound
- * idle timer on g_rpc so the keepalive loop doesn't double-send a
- * heartbeat on top of an otherwise busy link. Returns 0 on success. */
+/* Write one length-prefixed frame to a specific client slot. On
+ * success, refreshes that client's last_outbound_ms so the keepalive
+ * loop doesn't double-send a heartbeat on top of an otherwise busy
+ * link. Returns 0 on success, -1 on short write (caller typically
+ * closes that slot). */
 static int
-rpc_write_frame( int fd, unsigned char kind, const void *payload, size_t len )
+rpc_write_frame_to( RpcClient *c, unsigned char kind,
+                    const void *payload, size_t len )
 {
     unsigned char header[RPC_FRAME_HEADER_BYTES];
     uint32_t nlen;
 
+    if ( c == NULL || c->fd < 0 )
+        return -1;
     if ( len > RPC_FRAME_MAX_PAYLOAD )
         return -1;
 
@@ -195,13 +235,30 @@ rpc_write_frame( int fd, unsigned char kind, const void *payload, size_t len )
     memcpy( header, &nlen, 4 );
     header[4] = kind;
 
-    if ( write_exact( fd, header, RPC_FRAME_HEADER_BYTES ) != 0 )
+    if ( write_exact( c->fd, header, RPC_FRAME_HEADER_BYTES ) != 0 )
         return -1;
-    if ( len > 0 && write_exact( fd, payload, len ) != 0 )
+    if ( len > 0 && write_exact( c->fd, payload, len ) != 0 )
         return -1;
 
-    g_rpc.last_outbound_ms = rpc_now_ms();
+    c->last_outbound_ms = rpc_now_ms();
     return 0;
+}
+
+/* Close a client slot and reset its bookkeeping. Safe to call on an
+ * already-closed slot. */
+static void
+rpc_close_client( RpcClient *c )
+{
+    if ( c == NULL ) return;
+    if ( c->fd >= 0 )
+    {
+        shutdown( c->fd, SHUT_RDWR );
+        close( c->fd );
+        c->fd = -1;
+    }
+    c->authenticated    = 0;
+    c->last_inbound_ms  = 0;
+    c->last_outbound_ms = 0;
 }
 
 /* Wait up to `timeout_ms` for fd to become readable. Returns 1 if
@@ -227,17 +284,17 @@ rpc_poll_readable( int fd, int timeout_ms )
     return 0;
 }
 
-/* Read one frame. Allocates `*payload_out` (freed by caller) and
- * populates `*kind_out`, `*len_out`. Returns:
+/* Read one frame from a specific fd. Allocates `*payload_out` (freed
+ * by caller) and populates `*kind_out`, `*len_out`. Returns:
  *    0 = frame read ok
  *    1 = peer closed cleanly
  *   -1 = error (oversize, short read, protocol breakage)
  */
 static int
-rpc_read_frame( int fd,
-                unsigned char *kind_out,
-                unsigned char **payload_out,
-                size_t *len_out )
+rpc_read_frame_fd( int fd,
+                   unsigned char *kind_out,
+                   unsigned char **payload_out,
+                   size_t *len_out )
 {
     unsigned char header[RPC_FRAME_HEADER_BYTES];
     uint32_t nlen;
@@ -279,28 +336,70 @@ rpc_read_frame( int fd,
     return 0;
 }
 
-/* --- Emitter glue: install for server_core_emit_raw() ------------- */
+/* --- Emitter glue: install for server_core_emit_raw() -------------
+ *
+ * The line emitter takes an `is_response` hint so we can route
+ * response-shaped frames to the currently-dispatching client only
+ * while broadcasting events to everyone. Binary frames are always
+ * broadcast for now — the Qt UI should paint any rendered frame even
+ * if it was triggered by another client (exactly what the DEMO wants).
+ */
 
 static void
-rpc_line_emitter( const char *buf, size_t len, void *ctx )
+rpc_line_emitter( const char *buf, size_t len,
+                  int is_response, void *ctx )
 {
-    RpcContext *c = (RpcContext *) ctx;
-    if ( c == NULL || c->fd < 0 )
+    RpcServer *s = (RpcServer *) ctx;
+    int i;
+
+    if ( s == NULL || buf == NULL || len == 0 )
         return;
-    (void) rpc_write_frame( c->fd, RPC_FRAME_KIND_JSON, buf, len );
+
+    if ( is_response )
+    {
+        if ( s->current_client_idx < 0
+             || s->current_client_idx >= RPC_MAX_CLIENTS )
+            return;
+        RpcClient *c = &s->clients[s->current_client_idx];
+        if ( c->fd < 0 )
+            return;
+        if ( rpc_write_frame_to( c, RPC_FRAME_KIND_JSON, buf, len ) != 0 )
+            rpc_close_client( c );
+        return;
+    }
+
+    /* Broadcast: fan out to every authenticated client. Unauthenticated
+     * slots are skipped — they might still be in mid-handshake and
+     * should not see someone else's state_changed event. */
+    for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
+    {
+        RpcClient *c = &s->clients[i];
+        if ( c->fd < 0 || !c->authenticated )
+            continue;
+        if ( rpc_write_frame_to( c, RPC_FRAME_KIND_JSON, buf, len ) != 0 )
+            rpc_close_client( c );
+    }
 }
 
-/* Binary-frame emitter for the RPC transport. `payload` already carries
- * the subtype/codec/flags control bytes + uint16-length JSON header +
- * body — see server_emit_binary_frame() in server_core.c. We just
- * length-prefix it as a kind=0x02 frame on the wire. */
+/* Binary-frame emitter. Broadcast to every authenticated client so the
+ * Qt UI paints frames triggered by the MCP peer (and vice versa). */
 static void
 rpc_binary_emitter( const unsigned char *payload, size_t len, void *ctx )
 {
-    RpcContext *c = (RpcContext *) ctx;
-    if ( c == NULL || c->fd < 0 )
+    RpcServer *s = (RpcServer *) ctx;
+    int i;
+
+    if ( s == NULL || payload == NULL || len == 0 )
         return;
-    (void) rpc_write_frame( c->fd, RPC_FRAME_KIND_BINARY, payload, len );
+
+    for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
+    {
+        RpcClient *c = &s->clients[i];
+        if ( c->fd < 0 || !c->authenticated )
+            continue;
+        if ( rpc_write_frame_to( c, RPC_FRAME_KIND_BINARY, payload, len ) != 0 )
+            rpc_close_client( c );
+    }
 }
 
 /* --- Rendezvous + token ------------------------------------------- */
@@ -439,13 +538,14 @@ rpc_const_time_equal( const char *a, const char *b, size_t n )
     return diff == 0;
 }
 
-/* Validate the first received frame as `{"type":"hello", "token":"..."}`.
- * Emits either `hello_ack` (on success) or a `protocol_mismatch` error
- * response (on failure) via the framed emitter. Returns 0 on success,
- * -1 on auth failure. */
+/* Validate a hello frame's token. Emits hello_ack via server_try_hello
+ * on success; emits protocol_mismatch error on failure. Both go through
+ * the current-client-routed emitter since current_client_idx is set to
+ * this client before the call. Returns 0 on success, -1 on auth
+ * failure. */
 static int
-rpc_handshake( RpcContext *c,
-               const unsigned char *payload, size_t len )
+rpc_handshake_validate( const char *expected_token_b64,
+                        const unsigned char *payload, size_t len )
 {
     cJSON      *root;
     cJSON      *type_item;
@@ -493,7 +593,7 @@ rpc_handshake( RpcContext *c,
      * the expected length, with a forced-inequality sentinel on short
      * input, to preserve the timing invariant. */
     {
-        size_t expected_len = strlen( c->token_b64 );
+        size_t expected_len = strlen( expected_token_b64 );
         size_t recv_len     = strlen( token_recv );
         char   pad[RPC_TOKEN_B64_LEN];
 
@@ -502,11 +602,11 @@ rpc_handshake( RpcContext *c,
         {
             memcpy( pad, token_recv, recv_len );
             ok = 0;   /* forced mismatch because pad is zero-padded */
-            (void) rpc_const_time_equal( c->token_b64, pad, expected_len );
+            (void) rpc_const_time_equal( expected_token_b64, pad, expected_len );
         }
         else
         {
-            ok = rpc_const_time_equal( c->token_b64, token_recv,
+            ok = rpc_const_time_equal( expected_token_b64, token_recv,
                                        expected_len )
                  && recv_len == expected_len;
         }
@@ -523,7 +623,7 @@ rpc_handshake( RpcContext *c,
     /* Auth passed — hand the original hello line back through the
      * shared handshake helper, which emits hello_ack with the version-
      * compatibility bit set. payload is NUL-terminated by
-     * rpc_read_frame(). */
+     * rpc_read_frame_fd(). */
     (void) server_try_hello( (const char *) payload );
     return 0;
 }
@@ -533,13 +633,20 @@ rpc_handshake( RpcContext *c,
 static void
 rpc_signal_handler( int signo )
 {
+    int i;
     (void) signo;
     g_signal_term_pending = 1;
-    /* Best-effort: shut down the client read side so the main loop
-     * observes EOF promptly. Avoid close() in a handler — just
-     * shutdown() which is async-signal-safe on Linux. */
-    if ( g_rpc.fd >= 0 )
-        shutdown( g_rpc.fd, SHUT_RD );
+    /* Best-effort: shut down each client's read side so the main loop
+     * observes EOF promptly. shutdown() is async-signal-safe on Linux. */
+    for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
+    {
+        if ( g_rpc.clients[i].fd >= 0 )
+            shutdown( g_rpc.clients[i].fd, SHUT_RD );
+    }
+    /* Wake an accept() on listen_fd too so a quiet server with no
+     * clients still exits promptly. */
+    if ( g_rpc.listen_fd >= 0 )
+        shutdown( g_rpc.listen_fd, SHUT_RD );
 }
 
 static void
@@ -557,9 +664,10 @@ rpc_install_signals( void )
     signal( SIGPIPE, SIG_IGN );
 }
 
-/* Emit a session_ending event through the current emitter. */
+/* Emit a session_ending event. Broadcasts to every authenticated
+ * client by going through the broadcast channel (server_emit_raw). */
 static void
-rpc_emit_session_ending( const char *reason, int seconds_remaining )
+rpc_emit_session_ending_broadcast( const char *reason, int seconds_remaining )
 {
     cJSON *root = cJSON_CreateObject();
     char  *txt;
@@ -579,7 +687,104 @@ rpc_emit_session_ending( const char *reason, int seconds_remaining )
     cJSON_Delete( root );
 }
 
-/* --- Main entry point --------------------------------------------- */
+/* Per-client session_ending. Uses a targeted write rather than the
+ * broadcast channel so a single peer-idle timeout doesn't nudge the
+ * other clients. */
+static void
+rpc_emit_session_ending_to( RpcClient *c, const char *reason )
+{
+    cJSON *root = cJSON_CreateObject();
+    char  *txt;
+    if ( root == NULL || c == NULL || c->fd < 0 )
+    {
+        if ( root != NULL ) cJSON_Delete( root );
+        return;
+    }
+    cJSON_AddStringToObject( root, "type",   "event" );
+    cJSON_AddStringToObject( root, "event",  "session_ending" );
+    cJSON_AddStringToObject( root, "reason", reason );
+    cJSON_AddNumberToObject( root, "seconds_remaining", 0 );
+    txt = cJSON_PrintUnformatted( root );
+    if ( txt != NULL )
+    {
+        (void) rpc_write_frame_to( c, RPC_FRAME_KIND_JSON,
+                                   txt, strlen( txt ) );
+        free( txt );
+    }
+    cJSON_Delete( root );
+}
+
+/* Find the next free client slot, or -1 if all slots are taken. */
+static int
+rpc_find_free_slot( RpcServer *s )
+{
+    int i;
+    for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
+        if ( s->clients[i].fd < 0 )
+            return i;
+    return -1;
+}
+
+/* Count authenticated client slots. Used only for bookkeeping/logging. */
+static int
+rpc_authenticated_count( RpcServer *s )
+{
+    int i, n = 0;
+    for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
+        if ( s->clients[i].fd >= 0 && s->clients[i].authenticated )
+            n++;
+    return n;
+}
+
+/* Accept a new connection off the listen socket and install it in a
+ * free slot. Returns the slot index on success, -1 if no slot is free
+ * (in which case the connection is closed immediately) or accept
+ * failed. */
+static int
+rpc_accept_new_client( RpcServer *s )
+{
+    int fd;
+    int opt = 1;
+    int slot;
+    struct sockaddr_in peer;
+    socklen_t peer_len = sizeof( peer );
+
+    fd = accept( s->listen_fd, (struct sockaddr *) &peer, &peer_len );
+    if ( fd < 0 )
+    {
+        if ( errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK )
+            fprintf( stderr, "griz-server: accept failed: %s\n",
+                     strerror( errno ) );
+        return -1;
+    }
+
+    slot = rpc_find_free_slot( s );
+    if ( slot < 0 )
+    {
+        /* All slots taken — reject politely and keep serving the rest. */
+        fprintf( stderr,
+                 "griz-server: refusing new client: all %d slots in use\n",
+                 RPC_MAX_CLIENTS );
+        shutdown( fd, SHUT_RDWR );
+        close( fd );
+        return -1;
+    }
+
+    setsockopt( fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof( opt ) );
+
+    s->clients[slot].fd               = fd;
+    s->clients[slot].authenticated    = 0;
+    s->clients[slot].last_inbound_ms  = rpc_now_ms();
+    s->clients[slot].last_outbound_ms = s->clients[slot].last_inbound_ms;
+    return slot;
+}
+
+/* --- Main entry point --------------------------------------------- *
+ *
+ * The server_core_startup() call is scheduled to run on the FIRST
+ * client handshake (see below). server_core_dispatch_line() is called
+ * with current_client_idx set so response-shaped emits route correctly.
+ */
 
 int
 process_server_mode_rpc( const char *db_path,
@@ -588,21 +793,19 @@ process_server_mode_rpc( const char *db_path,
                          int bind_port,
                          const char *rendezvous_path )
 {
-    int  listen_fd = -1;
-    int  client_fd = -1;
-    int  opt       = 1;
-    struct sockaddr_in addr;
+    int                 opt       = 1;
+    struct sockaddr_in  addr;
     socklen_t           addr_len = sizeof( addr );
     unsigned char       token_raw[RPC_TOKEN_BYTES];
-    char                token_b64[RPC_TOKEN_B64_LEN];
     char                session_id[16];
     char                default_rv[PATH_MAX];
     const char         *rv_path;
     int                 assigned_port;
     Analysis           *analy = NULL;
-    int                 rc;
-    int                 peer_idle_triggered = 0;
     int                 return_code = 0;
+    int                 startup_rc;
+
+    rpc_server_init( &g_rpc );
 
     if ( bind_host == NULL || bind_host[0] == '\0' )
         bind_host = "127.0.0.1";
@@ -618,7 +821,7 @@ process_server_mode_rpc( const char *db_path,
         fprintf( stderr, "griz-server: failed to read /dev/urandom\n" );
         return 1;
     }
-    rpc_base64_encode( token_raw, sizeof( token_raw ), token_b64 );
+    rpc_base64_encode( token_raw, sizeof( token_raw ), g_rpc.token_b64 );
 
     /* --- Rendezvous path. --- */
     if ( rendezvous_path != NULL && rendezvous_path[0] != '\0' )
@@ -639,14 +842,14 @@ process_server_mode_rpc( const char *db_path,
     }
 
     /* --- Listen socket. --- */
-    listen_fd = socket( AF_INET, SOCK_STREAM, 0 );
-    if ( listen_fd < 0 )
+    g_rpc.listen_fd = socket( AF_INET, SOCK_STREAM, 0 );
+    if ( g_rpc.listen_fd < 0 )
     {
         fprintf( stderr, "griz-server: socket() failed: %s\n",
                  strerror( errno ) );
         return 1;
     }
-    setsockopt( listen_fd, SOL_SOCKET, SO_REUSEADDR,
+    setsockopt( g_rpc.listen_fd, SOL_SOCKET, SO_REUSEADDR,
                 &opt, sizeof( opt ) );
 
     memset( &addr, 0, sizeof( addr ) );
@@ -654,272 +857,401 @@ process_server_mode_rpc( const char *db_path,
     addr.sin_port   = htons( (uint16_t) bind_port );
     if ( inet_pton( AF_INET, bind_host, &addr.sin_addr ) != 1 )
     {
-        fprintf( stderr, "griz-server: invalid bind host '%s'\n",
-                 bind_host );
-        close( listen_fd );
+        fprintf( stderr, "griz-server: invalid bind host '%s'\n", bind_host );
+        close( g_rpc.listen_fd );
+        g_rpc.listen_fd = -1;
         return 1;
     }
-    if ( bind( listen_fd, (struct sockaddr *) &addr, sizeof( addr ) ) != 0 )
+    if ( bind( g_rpc.listen_fd, (struct sockaddr *) &addr, sizeof( addr ) ) != 0 )
     {
-        fprintf( stderr, "griz-server: bind failed: %s\n",
-                 strerror( errno ) );
-        close( listen_fd );
+        fprintf( stderr, "griz-server: bind failed: %s\n", strerror( errno ) );
+        close( g_rpc.listen_fd );
+        g_rpc.listen_fd = -1;
         return 1;
     }
-    if ( getsockname( listen_fd, (struct sockaddr *) &addr, &addr_len ) != 0 )
+    if ( getsockname( g_rpc.listen_fd, (struct sockaddr *) &addr, &addr_len ) != 0 )
     {
         fprintf( stderr, "griz-server: getsockname failed: %s\n",
                  strerror( errno ) );
-        close( listen_fd );
+        close( g_rpc.listen_fd );
+        g_rpc.listen_fd = -1;
         return 1;
     }
     assigned_port = (int) ntohs( addr.sin_port );
-    if ( listen( listen_fd, 1 ) != 0 )
+    if ( listen( g_rpc.listen_fd, RPC_MAX_CLIENTS ) != 0 )
     {
         fprintf( stderr, "griz-server: listen failed: %s\n",
                  strerror( errno ) );
-        close( listen_fd );
+        close( g_rpc.listen_fd );
+        g_rpc.listen_fd = -1;
         return 1;
     }
 
     /* --- Rendezvous file. --- */
     if ( rpc_write_rendezvous( rv_path, session_id, bind_host,
-                               assigned_port, token_b64 ) != 0 )
+                               assigned_port, g_rpc.token_b64 ) != 0 )
     {
         fprintf( stderr,
                  "griz-server: failed to write rendezvous file %s: %s\n",
                  rv_path, strerror( errno ) );
-        close( listen_fd );
+        close( g_rpc.listen_fd );
+        g_rpc.listen_fd = -1;
         return 1;
     }
     fprintf( stderr,
-             "griz-server: listening on %s:%d, rendezvous=%s\n",
-             bind_host, assigned_port, rv_path );
+             "griz-server: listening on %s:%d, rendezvous=%s (max %d clients)\n",
+             bind_host, assigned_port, rv_path, RPC_MAX_CLIENTS );
 
     rpc_install_signals();
 
-    /* --- Accept (single connection). --- */
-    {
-        struct sockaddr_in peer;
-        socklen_t          peer_len = sizeof( peer );
-        client_fd = accept( listen_fd,
-                            (struct sockaddr *) &peer, &peer_len );
-    }
-    /* Listen socket no longer needed; v1 is single-connection. */
-    close( listen_fd );
-    listen_fd = -1;
-
-    if ( client_fd < 0 )
-    {
-        fprintf( stderr, "griz-server: accept failed: %s\n",
-                 strerror( errno ) );
-        unlink( rv_path );
-        return 1;
-    }
-
-    /* TCP_NODELAY: responses are latency-sensitive, frames are big —
-     * neither benefits from Nagle. */
-    setsockopt( client_fd, IPPROTO_TCP, TCP_NODELAY,
-                &opt, sizeof( opt ) );
-
-    g_rpc.fd = client_fd;
-    memcpy( g_rpc.token_b64, token_b64, sizeof( token_b64 ) );
-    g_rpc.last_inbound_ms  = rpc_now_ms();
-    g_rpc.last_outbound_ms = g_rpc.last_inbound_ms;
-
-    /* Install the framed emitters for all subsequent output. */
+    /* Install the framed emitters for all subsequent output. Must be
+     * in place before we accept the first client so their hello_ack
+     * goes through the RPC channel. */
     server_set_line_emitter(   rpc_line_emitter,   &g_rpc );
     server_set_binary_emitter( rpc_binary_emitter, &g_rpc );
 
-    /* --- Handshake (token auth). ---
-     * The client must send hello within RPC_PEER_IDLE_TIMEOUT_MS of
-     * TCP accept or we treat it as an idle peer and tear down. */
+    /* --- Wait for the first client, handshake, then run startup. ---
+     * Startup runs exactly once per server lifetime, triggered by the
+     * first successful handshake. Subsequent clients share the Analy
+     * and OSMesa context. */
     {
-        unsigned char *payload = NULL;
-        size_t         len     = 0;
-        unsigned char  kind    = 0;
-        int            r;
-        int            pr;
+        int first_slot = -1;
+        int pr;
 
-        pr = rpc_poll_readable( client_fd, RPC_PEER_IDLE_TIMEOUT_MS );
-        if ( pr <= 0 )
+        while ( !g_signal_term_pending && first_slot < 0 )
         {
+            pr = rpc_poll_readable( g_rpc.listen_fd, RPC_POLL_TICK_MS );
+            if ( pr < 0 )
+            {
+                return_code = 1;
+                goto cleanup;
+            }
             if ( pr == 0 )
+                continue;
+
+            first_slot = rpc_accept_new_client( &g_rpc );
+        }
+        if ( g_signal_term_pending || first_slot < 0 )
+        {
+            return_code = 1;
+            goto cleanup;
+        }
+
+        /* Read first frame from the first client, validate hello + token. */
+        {
+            unsigned char *payload = NULL;
+            size_t         len     = 0;
+            unsigned char  kind    = 0;
+            int            pr_client;
+            int            r;
+
+            pr_client = rpc_poll_readable( g_rpc.clients[first_slot].fd,
+                                           RPC_PEER_IDLE_TIMEOUT_MS );
+            if ( pr_client <= 0 )
+            {
+                g_rpc.current_client_idx = first_slot;
+                if ( pr_client == 0 )
+                    server_emit_error( NULL, "protocol_mismatch",
+                                       "hello not received within idle timeout" );
+                g_rpc.current_client_idx = -1;
+                rpc_close_client( &g_rpc.clients[first_slot] );
+                return_code = 1;
+                goto cleanup;
+            }
+
+            r = rpc_read_frame_fd( g_rpc.clients[first_slot].fd,
+                                   &kind, &payload, &len );
+            if ( r != 0 || kind != RPC_FRAME_KIND_JSON )
+            {
+                g_rpc.current_client_idx = first_slot;
                 server_emit_error( NULL, "protocol_mismatch",
-                                   "hello not received within idle timeout" );
-            return_code = 1;
-            goto cleanup;
-        }
+                                   "first frame must be JSON hello" );
+                g_rpc.current_client_idx = -1;
+                free( payload );
+                rpc_close_client( &g_rpc.clients[first_slot] );
+                return_code = 1;
+                goto cleanup;
+            }
+            g_rpc.clients[first_slot].last_inbound_ms = rpc_now_ms();
 
-        r = rpc_read_frame( client_fd, &kind, &payload, &len );
-        if ( r != 0 || kind != RPC_FRAME_KIND_JSON )
-        {
-            server_emit_error( NULL, "protocol_mismatch",
-                               "first frame must be JSON hello" );
+            g_rpc.current_client_idx = first_slot;
+            r = rpc_handshake_validate( g_rpc.token_b64, payload, len );
+            g_rpc.current_client_idx = -1;
             free( payload );
-            return_code = 1;
-            goto cleanup;
+            if ( r != 0 )
+            {
+                rpc_close_client( &g_rpc.clients[first_slot] );
+                return_code = 1;
+                goto cleanup;
+            }
+            g_rpc.clients[first_slot].authenticated = 1;
         }
-        g_rpc.last_inbound_ms = rpc_now_ms();
-        r = rpc_handshake( &g_rpc, payload, len );
-        free( payload );
-        if ( r != 0 )
-        {
-            return_code = 1;
-            goto cleanup;
-        }
-    }
 
-    /* --- Analysis + DB + OSMesa startup. --- */
-    rc = server_core_startup( &analy, db_path, width, height );
-    if ( rc != 0 )
-    {
-        server_emit_error( NULL, "internal_error",
-                           "server startup failed" );
-        return_code = rc;
-        goto cleanup;
+        /* --- Analysis + DB + OSMesa startup. --- */
+        startup_rc = server_core_startup( &analy, db_path, width, height );
+        if ( startup_rc != 0 )
+        {
+            g_rpc.current_client_idx = first_slot;
+            server_emit_error( NULL, "internal_error",
+                               "server startup failed" );
+            g_rpc.current_client_idx = -1;
+            return_code = startup_rc;
+            goto cleanup;
+        }
+        g_rpc.startup_done = 1;
+
+        g_rpc.current_client_idx = first_slot;
+        server_emit_ready();
+        g_rpc.current_client_idx = -1;
     }
-    server_emit_ready();
 
     /* --- Dispatch loop. ---
-     * Each iteration:
-     *   1. Emit a kind=0x03 heartbeat if we've been outbound-idle for
-     *      RPC_HEARTBEAT_INTERVAL_MS. rpc_write_frame() resets
-     *      last_outbound_ms, so a busy link never double-sends.
-     *   2. poll() with a timeout scaled to the nearest upcoming timer
-     *      event (or RPC_POLL_TICK_MS, whichever is smaller) so the
-     *      signal handler gets a prompt chance to tear down.
-     *   3. If poll() returns readable, drain a frame — this also
-     *      refreshes last_inbound_ms. Queued heartbeats that arrived
-     *      during a long command dispatch are drained here before the
-     *      peer_idle check fires.
-     *   4. Only on a pure poll() timeout with no bytes available do we
-     *      declare session_ending(peer_idle); that avoids a spurious
-     *      peer_idle when the socket buffer is non-empty but the loop
-     *      was busy processing a long-running command.
+     * On each iteration:
+     *   1. Per-client heartbeat: emit kind=0x03 to any client that's
+     *      been outbound-idle for RPC_HEARTBEAT_INTERVAL_MS.
+     *   2. Build the poll set (listen_fd + every connected client fd).
+     *   3. poll() with a timeout scaled to the nearest upcoming timer
+     *      event across all clients (or RPC_POLL_TICK_MS, whichever is
+     *      smaller) so signals/frame-flush get a prompt chance.
+     *   4. On accept-readable: accept; handshake synchronously.
+     *   5. On client-readable: read one frame.
+     *        - Heartbeat: echo.
+     *        - JSON: set current_client_idx; dispatch; clear.
+     *   6. On pure timeout: flush any deferred render frame, then check
+     *      peer_idle per-client and close the ones that crossed the line.
      */
     while ( !g_signal_term_pending )
     {
-        unsigned char *payload = NULL;
-        size_t         len     = 0;
-        unsigned char  kind    = 0;
-        int            r;
-        int            pr;
-        long long      now_ms;
-        long long      outbound_idle;
-        long long      inbound_remaining;
-        long long      outbound_remaining;
-        int            timeout_ms;
+        struct pollfd pfds[RPC_MAX_CLIENTS + 1];
+        int           pfd_slot[RPC_MAX_CLIENTS + 1]; /* back-map to clients[] */
+        int           pfd_n = 0;
+        long long     now_ms;
+        int           timeout_ms;
+        int           i;
+        int           pr;
 
-        now_ms        = rpc_now_ms();
-        outbound_idle = now_ms - g_rpc.last_outbound_ms;
+        now_ms = rpc_now_ms();
 
-        if ( outbound_idle >= RPC_HEARTBEAT_INTERVAL_MS )
+        /* Per-client heartbeat emission. */
+        for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
         {
-            (void) rpc_write_frame( client_fd, RPC_FRAME_KIND_HEARTBEAT,
-                                    NULL, 0 );
-            now_ms        = rpc_now_ms();
-            outbound_idle = 0;
+            RpcClient *c = &g_rpc.clients[i];
+            if ( c->fd < 0 || !c->authenticated )
+                continue;
+            if ( now_ms - c->last_outbound_ms >= RPC_HEARTBEAT_INTERVAL_MS )
+            {
+                (void) rpc_write_frame_to( c, RPC_FRAME_KIND_HEARTBEAT,
+                                           NULL, 0 );
+            }
         }
 
-        outbound_remaining = RPC_HEARTBEAT_INTERVAL_MS - outbound_idle;
-        inbound_remaining  = RPC_PEER_IDLE_TIMEOUT_MS
-                             - ( now_ms - g_rpc.last_inbound_ms );
-        if ( inbound_remaining < 0 )  inbound_remaining  = 0;
-        if ( outbound_remaining < 0 ) outbound_remaining = 0;
+        /* Compute shortest timeout across listen_fd + every client. */
+        timeout_ms = RPC_POLL_TICK_MS;
+        for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
+        {
+            RpcClient *c = &g_rpc.clients[i];
+            long long  outbound_remaining;
+            long long  inbound_remaining;
+            int        per_client_ms;
 
-        timeout_ms = (int) ( ( outbound_remaining < inbound_remaining )
-                             ? outbound_remaining : inbound_remaining );
-        if ( timeout_ms > RPC_POLL_TICK_MS ) timeout_ms = RPC_POLL_TICK_MS;
-        if ( timeout_ms < 0 )                timeout_ms = 0;
+            if ( c->fd < 0 )
+                continue;
 
-        /* If a deferred frame is queued by the 30 Hz rate limiter
-         * (05-rendering-and-streaming.md §5.3), wake up no later than
-         * the start of the next allowed push so the queued frame is
-         * drained without waiting for the second-scale poll tick. */
+            outbound_remaining = RPC_HEARTBEAT_INTERVAL_MS
+                                 - ( now_ms - c->last_outbound_ms );
+            inbound_remaining  = RPC_PEER_IDLE_TIMEOUT_MS
+                                 - ( now_ms - c->last_inbound_ms );
+            if ( outbound_remaining < 0 ) outbound_remaining = 0;
+            if ( inbound_remaining  < 0 ) inbound_remaining  = 0;
+
+            per_client_ms = (int) ( ( outbound_remaining < inbound_remaining )
+                                    ? outbound_remaining : inbound_remaining );
+            if ( per_client_ms < timeout_ms )
+                timeout_ms = per_client_ms;
+        }
+        /* Deferred frame flush (30 Hz rate limiter, 05 §5.3). */
         {
             int frame_wait_ms = server_render_ms_until_next_frame();
             if ( frame_wait_ms >= 0 && frame_wait_ms < timeout_ms )
                 timeout_ms = frame_wait_ms;
         }
+        if ( timeout_ms < 0 ) timeout_ms = 0;
 
-        pr = rpc_poll_readable( client_fd, timeout_ms );
+        /* Build pollfd set. */
+        pfds[pfd_n].fd      = g_rpc.listen_fd;
+        pfds[pfd_n].events  = POLLIN;
+        pfds[pfd_n].revents = 0;
+        pfd_slot[pfd_n]     = -1;   /* listen socket sentinel */
+        pfd_n++;
+
+        for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
+        {
+            if ( g_rpc.clients[i].fd < 0 )
+                continue;
+            pfds[pfd_n].fd      = g_rpc.clients[i].fd;
+            pfds[pfd_n].events  = POLLIN;
+            pfds[pfd_n].revents = 0;
+            pfd_slot[pfd_n]     = i;
+            pfd_n++;
+        }
+
+        pr = poll( pfds, pfd_n, timeout_ms );
         if ( pr < 0 )
+        {
+            if ( errno == EINTR )
+                continue;
             break;
+        }
         if ( pr == 0 )
         {
-            /* Pure timeout: flush a deferred frame if the cadence
-             * window has opened, then check peer_idle (any queued
-             * inbound bytes would have made poll return readable). */
+            /* Pure timeout: flush any deferred frame, then check
+             * per-client peer_idle. */
             (void) server_render_flush_deferred_if_due( analy );
 
-            if ( rpc_now_ms() - g_rpc.last_inbound_ms
-                 >= RPC_PEER_IDLE_TIMEOUT_MS )
+            now_ms = rpc_now_ms();
+            for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
             {
-                peer_idle_triggered = 1;
-                break;
+                RpcClient *c = &g_rpc.clients[i];
+                if ( c->fd < 0 || !c->authenticated )
+                    continue;
+                if ( now_ms - c->last_inbound_ms >= RPC_PEER_IDLE_TIMEOUT_MS )
+                {
+                    rpc_emit_session_ending_to( c, "peer_idle" );
+                    rpc_close_client( c );
+                }
             }
             continue;
         }
 
-        r = rpc_read_frame( client_fd, &kind, &payload, &len );
-        if ( r == 1 )  /* clean peer close */
+        /* Handle new accepts first so a burst of simultaneous connects
+         * doesn't starve on existing traffic. */
+        if ( pfds[0].revents & ( POLLIN | POLLHUP | POLLERR ) )
         {
-            free( payload );
-            break;
-        }
-        if ( r != 0 )
-        {
-            free( payload );
-            break;
-        }
-
-        g_rpc.last_inbound_ms = rpc_now_ms();
-
-        if ( kind == RPC_FRAME_KIND_HEARTBEAT )
-        {
-            /* Echo the payload back so the client can compute RTT. */
-            (void) rpc_write_frame( client_fd, RPC_FRAME_KIND_HEARTBEAT,
-                                    payload, len );
-            free( payload );
-            continue;
-        }
-        if ( kind != RPC_FRAME_KIND_JSON )
-        {
-            server_emit_error( NULL, "internal_error",
-                               "unsupported frame kind" );
-            free( payload );
-            break;
+            int new_slot = rpc_accept_new_client( &g_rpc );
+            if ( new_slot >= 0 )
+            {
+                /* We don't do a synchronous hello-wait here so other
+                 * clients keep making progress. Instead, wait for the
+                 * first frame from the new slot on the next iteration
+                 * of the poll loop. The peer-idle window applies to
+                 * the handshake too, matching 02-protocol.md §7. */
+            }
         }
 
-        if ( server_core_dispatch_line( (const char *) payload, analy ) == 1 )
+        /* Per-client data. */
+        for ( i = 1; i < pfd_n; i++ )
         {
+            int slot = pfd_slot[i];
+            RpcClient *c;
+            unsigned char *payload = NULL;
+            size_t         len     = 0;
+            unsigned char  kind    = 0;
+            int            r;
+
+            if ( !( pfds[i].revents & ( POLLIN | POLLHUP | POLLERR ) ) )
+                continue;
+            if ( slot < 0 || slot >= RPC_MAX_CLIENTS )
+                continue;
+            c = &g_rpc.clients[slot];
+            if ( c->fd < 0 )
+                continue;
+
+            r = rpc_read_frame_fd( c->fd, &kind, &payload, &len );
+            if ( r == 1 )  /* clean peer close */
+            {
+                free( payload );
+                rpc_close_client( c );
+                continue;
+            }
+            if ( r != 0 )  /* transport error */
+            {
+                free( payload );
+                rpc_close_client( c );
+                continue;
+            }
+
+            c->last_inbound_ms = rpc_now_ms();
+
+            if ( kind == RPC_FRAME_KIND_HEARTBEAT )
+            {
+                (void) rpc_write_frame_to( c, RPC_FRAME_KIND_HEARTBEAT,
+                                           payload, len );
+                free( payload );
+                continue;
+            }
+            if ( kind != RPC_FRAME_KIND_JSON )
+            {
+                g_rpc.current_client_idx = slot;
+                server_emit_error( NULL, "internal_error",
+                                   "unsupported frame kind" );
+                g_rpc.current_client_idx = -1;
+                free( payload );
+                rpc_close_client( c );
+                continue;
+            }
+
+            /* Unauthenticated slot: the JSON frame must be a hello. */
+            if ( !c->authenticated )
+            {
+                g_rpc.current_client_idx = slot;
+                r = rpc_handshake_validate( g_rpc.token_b64, payload, len );
+                if ( r != 0 )
+                {
+                    g_rpc.current_client_idx = -1;
+                    free( payload );
+                    rpc_close_client( c );
+                    continue;
+                }
+                c->authenticated = 1;
+                server_emit_ready();
+                g_rpc.current_client_idx = -1;
+                free( payload );
+                fprintf( stderr,
+                         "griz-server: client attached in slot %d (total=%d)\n",
+                         slot, rpc_authenticated_count( &g_rpc ) );
+                continue;
+            }
+
+            /* Authenticated: dispatch. */
+            g_rpc.current_client_idx = slot;
+            r = server_core_dispatch_line( (const char *) payload, analy );
+            g_rpc.current_client_idx = -1;
             free( payload );
-            break;
+            if ( r == 1 )
+            {
+                /* `quit` / `exit` / `end` terminates the server for
+                 * every client (DEMO.md D.9 — the Qt UI's quit tears
+                 * the whole process down). */
+                goto drain_and_exit;
+            }
         }
-        free( payload );
     }
+
+drain_and_exit:
 
     if ( g_signal_term_pending )
     {
-        rpc_emit_session_ending( "signal_term", 0 );
+        rpc_emit_session_ending_broadcast( "signal_term", 0 );
     }
-    else if ( peer_idle_triggered )
+    else
     {
-        rpc_emit_session_ending( "peer_idle", 0 );
+        /* Clean exit driven by a quit command: let peers know. */
+        rpc_emit_session_ending_broadcast( "server_quit", 0 );
     }
-    /* Transport errors / clean peer close: no session_ending — the
-     * socket is already unreliable or the client went away cleanly. */
 
     server_core_history_cleanup( analy );
 
 cleanup:
-    if ( client_fd >= 0 )
     {
-        shutdown( client_fd, SHUT_RDWR );
-        close( client_fd );
+        int i;
+        for ( i = 0; i < RPC_MAX_CLIENTS; i++ )
+            rpc_close_client( &g_rpc.clients[i] );
     }
-    g_rpc.fd = -1;
+    if ( g_rpc.listen_fd >= 0 )
+    {
+        close( g_rpc.listen_fd );
+        g_rpc.listen_fd = -1;
+    }
     unlink( rv_path );
 
     /* Restore default emitters in case anything later in the process

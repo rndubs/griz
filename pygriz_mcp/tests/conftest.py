@@ -38,6 +38,11 @@ class MockGriz:
         self._open = True
         self._database_path = path
 
+    def attach(self, rendezvous_path):
+        self._open = True
+        self._database_path = None
+        self._attached_to = str(rendezvous_path)
+
     def close(self):
         self._open = False
         self._database_path = None
@@ -45,6 +50,10 @@ class MockGriz:
     @property
     def is_open(self):
         return self._open
+
+    @property
+    def database_path(self):
+        return self._database_path
 
     def state(self):
         return dict(self._state)
@@ -71,6 +80,17 @@ class MockGriz:
     @property
     def materials(self):
         return self._materials
+
+
+@pytest.fixture(autouse=True)
+def _scrub_attach_env(monkeypatch):
+    """Scrub ``GRIZ_MCP_ATTACH_RENDEZVOUS`` so tests never silently attach to
+    a live UI when the caller's shell has the user-facing .mcp.json default
+    set. Lives in its own fixture (separate from ``_reset_session``) because
+    test modules redefine ``_reset_session`` to install custom factories,
+    which would shadow this scrub if it lived there.
+    """
+    monkeypatch.delenv("GRIZ_MCP_ATTACH_RENDEZVOUS", raising=False)
 
 
 @pytest.fixture(autouse=True)

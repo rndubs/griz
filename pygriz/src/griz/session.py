@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from griz.exceptions import GrizConnectionError
 from griz.field import FieldAPI
 from griz.materials import MaterialsAPI
+from griz.render import RenderAPI
 from griz.selection import SelectionAPI
 from griz.time_ import TimeAPI
 from griz.view import ViewAPI
@@ -60,6 +61,7 @@ class Griz:
         self._time = TimeAPI(self)
         self._materials = MaterialsAPI(self)
         self._selection = SelectionAPI(self)
+        self._render = RenderAPI(self)
 
         if database is not None:
             self.open(database)
@@ -88,6 +90,33 @@ class Griz:
 
         self._worker = self._worker_factory(db_path, **kwargs)
         self._database_path = db_path
+
+    def attach(self, rendezvous_path: str | os.PathLike[str]) -> None:
+        """Attach to a griz-server already spawned by another client.
+
+        Reads the given rendezvous file, connects, and completes the
+        standard hello/hello_ack/ready handshake. The Analysis and
+        OSMesa context are shared with the spawning peer (DEMO.md) —
+        this session's mutations are visible to the UI and vice versa.
+
+        In attach mode `database_path` stays unset (we don't own the DB
+        file path); call `state()` to discover what the peer has open.
+        `close()` tears down the attached socket only; the underlying
+        server keeps running for other clients.
+        """
+        if self._worker is not None:
+            raise GrizConnectionError(
+                "a database is already open; call close() or reload() first"
+            )
+        # Lazy import to avoid making RpcWorker a hard dep of Griz when
+        # callers use the stdio Worker factory.
+        from griz.rpc_worker import RpcWorker
+        self._worker = RpcWorker(
+            attach_rendezvous=rendezvous_path,
+            width=self._width,
+            height=self._height,
+        )
+        self._database_path = None
 
     def reload(self) -> None:
         """Close and reopen the current database."""
@@ -215,6 +244,10 @@ class Griz:
     @property
     def selection(self) -> SelectionAPI:
         return self._selection
+
+    @property
+    def render(self) -> RenderAPI:
+        return self._render
 
     # ------------------------------------------------------------------ #
     # Introspection

@@ -154,8 +154,10 @@ class TestAnimate:
     def test_success(self, mock_griz):
         open_database("/fake/db.plt")
         result = animate(start=0, end=5)
-        frames = json.loads(result)
-        assert isinstance(frames, list)
+        payload = json.loads(result)
+        assert isinstance(payload, dict)
+        assert "frame_count" in payload
+        assert "final_state" in payload
 
     def test_no_session_raises(self):
         with pytest.raises(ToolError, match="No database is open"):

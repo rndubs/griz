@@ -41,11 +41,15 @@ looks_like_json_object( const char *line )
 }
 
 /* Default emitter: write the JSON text followed by a newline to stdout
- * and flush. Matches the stdio transport's line-delimited framing. */
+ * and flush. Matches the stdio transport's line-delimited framing.
+ * The `is_response` hint is only meaningful on multi-client transports;
+ * stdio is single-client so we ignore it. */
 static void
-stdout_line_emitter( const char *buf, size_t len, void *ctx )
+stdout_line_emitter( const char *buf, size_t len,
+                     int is_response, void *ctx )
 {
     (void) ctx;
+    (void) is_response;
     if ( buf == NULL || len == 0 )
         return;
     fwrite( buf, 1, len, stdout );
@@ -103,7 +107,10 @@ server_emit_raw( const char *json_text )
 {
     if ( json_text == NULL )
         return;
-    g_line_emitter( json_text, strlen( json_text ), g_line_emitter_ctx );
+    /* server_emit_raw is the broadcast channel (state_changed events,
+     * session_ending from a signal, ...). Per-client responses go through
+     * emit_json_line() below. */
+    g_line_emitter( json_text, strlen( json_text ), 0, g_line_emitter_ctx );
 }
 
 void
@@ -182,13 +189,16 @@ server_emit_binary_frame( unsigned char       subtype,
     return 0;
 }
 
+/* emit_json_line is used for response-shaped frames: responses,
+ * data_responses, errors, and hello_ack. Per-client on multi-client
+ * transports. Events and broadcasts go through server_emit_raw(). */
 static void
 emit_json_line( cJSON *obj )
 {
     char *rendered = cJSON_PrintUnformatted( obj );
     if ( rendered != NULL )
     {
-        g_line_emitter( rendered, strlen( rendered ), g_line_emitter_ctx );
+        g_line_emitter( rendered, strlen( rendered ), 1, g_line_emitter_ctx );
         free( rendered );
     }
 }

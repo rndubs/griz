@@ -85,6 +85,25 @@ class ResultsMap:
             )
         return list((cfg.get("components") or {}).keys())
 
+    def describe(self) -> dict[str, list[str] | None]:
+        """Return ``{field_name: [components] | None}`` for all curated fields.
+
+        ``None`` marks scalar fields (no component accepted). Component
+        order matches the YAML declaration order. Aliases are not
+        included — callers wanting the full surface should consume the
+        primary names, which always resolve.
+
+        Used by callers (e.g. the MCP layer) that want to produce
+        error/help text without duplicating the curated taxonomy.
+        """
+        out: dict[str, list[str] | None] = {}
+        for name, cfg in self._fields.items():
+            if cfg.get("scalar"):
+                out[name] = None
+            else:
+                out[name] = list((cfg.get("components") or {}).keys())
+        return out
+
     def resolve(self, field: str, component: str | None = None) -> str:
         """Return the griz command-language name for (field, component)."""
         cfg = self._fields.get(field)

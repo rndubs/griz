@@ -201,6 +201,16 @@ void App::startSession() {
             tr("[launch-failed] %1").arg(m_worker->errorString()));
         return;
     }
+
+    // Surface the rendezvous path so colleagues can attach MCP without
+    // scraping stderr — this is the whole point of DEMO.md task A.
+    const QString rv = m_worker->rendezvousPath();
+    if (!rv.isEmpty()) {
+        m_mainWindow->console()->appendOutput(
+            tr("[rendezvous] %1").arg(rv));
+        m_mainWindow->console()->appendOutput(
+            tr("[attach] export GRIZ_MCP_ATTACH_RENDEZVOUS=%1").arg(rv));
+    }
 }
 
 void App::onConsoleCommand(const QString &cmd) {
