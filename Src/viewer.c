@@ -212,7 +212,7 @@ char *griz_version = PACKAGE_VERSION;
 char *particle_cname = "part";
 
 static void scan_args( int argc, char *argv[], Analysis *analy );
-static Bool_type open_analysis( char *fname, Analysis *analy, Bool_type reload, Bool_type verify_only );
+Bool_type open_analysis( char *fname, Analysis *analy, Bool_type reload, Bool_type verify_only );
 static void usage( void );
 
 extern void log_variable_scale( float, float, int, float *, float *,
@@ -222,10 +222,15 @@ extern void
 write_history_text( char *, Bool_type );
 
 
+#ifndef GRIZ_SERVER_BUILD
 /************************************************************
  * TAG( main )
  *
  * Griz main routine.
+ *
+ * Compiled out when GRIZ_SERVER_BUILD is defined so the griz-server
+ * binary can supply its own main() while still linking viewer.c's
+ * helper routines.
  */
 int
 main( int argc, char *argv[] )
@@ -489,6 +494,7 @@ main( int argc, char *argv[] )
     manage_timer( 8, 1 );
 #endif
 }
+#endif /* GRIZ_SERVER_BUILD */
 
 
 /************************************************************
@@ -779,7 +785,9 @@ generate_banned_names_list( Analysis * analy )
 {
     int i;
     int qty_banned_names;
-    int qty_classes;
+    /* mili_get_class_names() accumulates into *qty_classes rather than
+     * assigning (io_wrappers.c), so it must start at 0. */
+    int qty_classes = 0;
     char *class_names[2000];
     int  superclasses[2000];
 
@@ -820,7 +828,7 @@ generate_banned_names_list( Analysis * analy )
  *
  * Open a plotfile and initialize an analysis.
  */
-static Bool_type
+Bool_type
 open_analysis( char *fname, Analysis *analy, Bool_type reload, Bool_type verify_only )
 {
     int num_states;
@@ -2891,6 +2899,7 @@ process_serial_batch_mode( char *batch_input_file_name, Analysis *analy )
 }
 
 #endif /* SERIAL_BATCH */
+
 
 /************************************************************
  * TAG( usage )

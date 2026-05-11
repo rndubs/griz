@@ -628,6 +628,46 @@ tokenize_line( char *buf, char tokens[MAXTOKENS][TOKENLENGTH], int *token_cnt, B
 }
 
 extern Bool_type mtl_color_active;
+
+/*****************************************************************
+ * TAG( griz_set_hilite )
+ *
+ * Shared hilite-singleton mutation. Called by parse_command()'s
+ * "hilite" branch and by the server-side pick_at handler so both
+ * paths end up with identical state. id_index is the 0-based internal
+ * index; label is the user-facing id (1-based unless a labels table
+ * aliases it).
+ */
+void
+griz_set_hilite( Analysis *analy, MO_class_data *p_mo_class,
+                 int id_index, int label )
+{
+    if ( analy == NULL || p_mo_class == NULL )
+        return;
+
+    analy->hilite_class = p_mo_class;
+    analy->hilite_num   = id_index;
+    if ( analy->hilite_num < 0 )
+    {
+        analy->hilite_num   = 1;
+        analy->hilite_label = 1;
+    }
+    else
+    {
+        analy->hilite_label = label;
+    }
+}
+
+void
+griz_clear_hilite( Analysis *analy )
+{
+    if ( analy == NULL )
+        return;
+    analy->hilite_class = NULL;
+    analy->hilite_num   = 0;
+    analy->hilite_label = 0;
+}
+
 /*****************************************************************
  * TAG( parse_command )
  *
@@ -1045,19 +1085,11 @@ parse_single_command( char *buf, Analysis *analy )
 						&& p_mo_class == analy->hilite_class )
 				{
 					/* Hilited existing hilit object -> de-hilite. */
-					analy->hilite_class = NULL;
-					analy->hilite_num = 0;
+					griz_clear_hilite( analy );
 				}
 				else
 				{
-					analy->hilite_class = p_mo_class;
-					analy->hilite_num   = temp_ival;
-					if ( analy->hilite_num<0 )
-					{
-						analy->hilite_num=1;
-						analy->hilite_label=1;
-					}
-					analy->hilite_label = ival;
+					griz_set_hilite( analy, p_mo_class, temp_ival, ival );
 				}
 				redraw = BINDING_MESH_VISUAL;
 			}

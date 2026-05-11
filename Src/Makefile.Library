@@ -238,6 +238,54 @@ else
 batch_opt: error_batch
 endif
 
+ifeq (@BATCH_ENABLE@,True)
+# Build Optimized Server Griz.
+#
+# Reuses the batch_opt configuration (OSMesa, SERIAL_BATCH) but adds
+# -DGRIZ_SERVER_BUILD so viewer.c's interactive main() is compiled out
+# and the stdio/RPC main() from server_main.c is linked instead.
+# Produces bin_server_opt/griz-server.
+#
+# server_core.o wraps the stdio loop's JSON request/response envelope
+# (Phase 2 of planning/MCP.md) and is the only TU that includes cJSON
+# beyond cJSON.c itself — neither gets pulled into batch_opt.
+CJSON_DIR = $(abs_top_srcdir)/ext/cJSON
+SERVER_OBJS = $(OBJS) server_main.o server_core.o \
+              server_core_startup.o server_stdio.o server_rpc.o \
+              server_query.o server_events.o server_render.o cJSON.o
+
+server_opt:	LIBS = $(BASELIBS) $(OSMESA_LIBS) @X11_LIBRARY_PATHS@ @NO_MESA_X11_LIBS@
+server_opt:	LDFLAGS_EXTRA += $(OSMESA_LIBS) @X11_LIBRARY_PATHS@ @NO_MESA_X11_LIBS@
+server_opt:	EXEC_PATH = $(ROOT_DIR)/bin_server_opt
+server_opt:	LIB_PATH  = $(ROOT_DIR)/lib_server_opt
+server_opt:	OBJS_PATH = $(ROOT_DIR)/objs_server_opt
+server_opt:	LDFLAGS  += $(OSMESA_LIBS)
+server_opt:	GRIZ_EXE = griz-server
+server_opt:	GRIZ_EXE_PATH = $(EXEC_PATH)/$(GRIZ_EXE)
+server_opt:	GRIZ_BATCH_EXE = $(GRIZ_EXE)
+server_opt:	MILILIBPATH = @MILI_LIBRARY_PATHS@
+server_opt:	DEFINES += @CC_DEFINES_GRIZ@ @BATCH_DEFINES@ -DGRIZ_SERVER_BUILD
+server_opt:	CPPFLAGS  = @CC_DEFINES_GRIZ@ @BATCH_DEFINES@ -DGRIZ_SERVER_BUILD $(INCLUDE_PATHS) -I$(OSMESA_HOME)/../include -I$(top_builddir) -I$(CJSON_DIR)
+server_opt:	mk_dirs buildinfo.h server_build
+
+# cJSON.c lives outside VPATH (Src/ext/cJSON/). Compile it with an
+# explicit rule rather than symlinking it into the shadow src tree.
+cJSON.o: $(CJSON_DIR)/cJSON.c $(CJSON_DIR)/cJSON.h
+	$(CC) $(CC_FLAGS) $(CPPFLAGS) -c $< -o $@
+
+# Dedicated link step for the server binary so that server_main.o is an
+# explicit prerequisite (target-specific OBJS overrides do not flow
+# through to build:'s prerequisite list without .SECONDEXPANSION).
+server_build: mililibcheck.txt update_objects $(SERVER_OBJS)
+	@echo ... New Server Build ...
+	@echo ... $(CONFIG_STRING) ...
+	$(LD) $(CC_FLAGS) $(LDFLAGS_EXTRA) -o $(GRIZ_EXE) $(SERVER_OBJS) $(MILILIBPATH) $(MILILIB) $(LIBS)
+	@ -mv $(ROOT_DIR)/src/*.o $(OBJS_PATH)
+	mv $(GRIZ_EXE) $(EXEC_PATH)/$(GRIZ_EXE)
+else
+server_opt: error_batch
+endif
+
 # Build Optimized Griz
 opt:      LIBS = $(BASELIBS) @X11_LIBRARY_PATHS@ @X11_LIBS@
 opt:      EXEC_PATH = $(ROOT_DIR)/bin_opt
@@ -341,8 +389,10 @@ clean:
 	-rm -f $(ROOT_DIR)/objs_opt/* 
 	-rm -f $(ROOT_DIR)/bin_batch_debug/*
 	-rm -f $(ROOT_DIR)/bin_batch_opt/*
-	-rm -f $(ROOT_DIR)/objs_batch_debug/* 
-	-rm -f $(ROOT_DIR)/objs_batch_opt/* 
+	-rm -f $(ROOT_DIR)/objs_batch_debug/*
+	-rm -f $(ROOT_DIR)/objs_batch_opt/*
+	-rm -f $(ROOT_DIR)/bin_server_opt/*
+	-rm -f $(ROOT_DIR)/objs_server_opt/*
 
 cleanopt:
 	-touch $(ROOT_DIR)/src/*.c

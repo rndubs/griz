@@ -139,4 +139,26 @@ extern GLfloat blue[];
 extern GLfloat magenta[];
 extern GLfloat cyan[];
 extern GLfloat yellow[];
+
+/* Picking (ID-buffer) draw mode — planning/ui-design/06-picking-and-queries.md
+ * §3.1 MVP. When enabled, a small set of per-primitive draw loops (hexs,
+ * tets, quads, tris, nodes) replace their fragment colours with a packed
+ * RGBA that encodes (element/node id) in RGB and a class-tag byte in A, so
+ * a single glReadPixels under the cursor decodes back to a pick hit.
+ * Transparent materials (diffuse alpha < 1) are skipped in the ID pass
+ * per §3.3. Normal rendering is unaffected when the flag is off. */
+extern void griz_set_draw_ids_mode( int enabled );
+extern int  griz_draw_ids_mode_active( void );
+
+/* Class-tag values packed into the alpha channel of the ID-buffer pixel.
+ * Kept small so the 0..255 → 0.0..1.0 float round-trip survives exact
+ * readback via GL_RGBA / GL_UNSIGNED_BYTE. Tag 0 is reserved for a miss
+ * (ID buffer is cleared to 0x00000000 before the pick render pass). */
+#define GRIZ_ID_TAG_MISS  0
+#define GRIZ_ID_TAG_NODE  1
+#define GRIZ_ID_TAG_HEX   2
+#define GRIZ_ID_TAG_TET   3
+#define GRIZ_ID_TAG_QUAD  4
+#define GRIZ_ID_TAG_TRI   5
+
 #endif /* DRAW_H */

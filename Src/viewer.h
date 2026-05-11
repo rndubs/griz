@@ -1879,6 +1879,11 @@ extern void model_history_log_update( char *command, Analysis *analy );
 extern void model_history_log_comment(char *comment, Analysis *analy);
 extern void model_history_log_run( Analysis * analy );
 
+#ifdef GRIZ_SERVER_BUILD
+extern int process_server_mode_stdio( const char *db_path,
+                                      int width, int height );
+#endif
+
 extern char * griz_version;
 extern char * particle_cname;
 extern Database_type_griz db_type;
@@ -2214,6 +2219,15 @@ extern GLfloat material_colors[MATERIAL_COLOR_CNT][3];
 extern void read_token( FILE *infile, char *token, int max_length );
 extern void parse_command( char *buf, Analysis *analy );
 extern void parse_sigle_command( char *buf, Analysis *analy );
+/* Shared mutation of the hilite singleton. Extracted from the "hilite"
+ * branch of parse_command() so the server-side pick_at handler can reuse
+ * the same state change without re-tokenizing a command string. The
+ * id_index is 0-based (matches hilite_num); label is the user-facing id
+ * (1-based, or a labels_found alias).
+ * planning/ui-design/06-picking-and-queries.md §9 invariant I1. */
+extern void griz_set_hilite( Analysis *analy, MO_class_data *p_mo_class,
+                             int id_index, int label );
+extern void griz_clear_hilite( Analysis *analy );
 extern Redraw_mode_type redraw_for_render_mode( Bool_type binding,
         Render_mode_type exclusive,
         Analysis *analy );

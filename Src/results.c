@@ -28,6 +28,9 @@
 
 #include <stdlib.h>
 #include "viewer.h"
+#ifdef GRIZ_SERVER_BUILD
+#include "cJSON.h"
+#endif
 
 #define OK 0
 
@@ -4139,6 +4142,108 @@ is_nodal_result( Result_type result_id )
 }
 
 #endif
+
+
+#ifdef GRIZ_SERVER_BUILD
+/*****************************************************************
+ * TAG( server_build_results_data )
+ *
+ * Build a cJSON object with { results: [...], current: ... } from
+ * the primal and derived result hash tables.
+ */
+/* Resolve a human-readable title for a derived result entry by walking
+ * Derived_result -> first non-empty srec_map -> Subrecord_result[0]
+ * -> candidate->long_names[index]. Returns NULL on any missing link. */
+static const char *
+derived_long_name( const Derived_result *p_dr )
+{
+    int i;
+
+    if ( p_dr == NULL || p_dr->srec_map == NULL || p_dr->srec_ids == NULL )
+        return NULL;
+
+    for ( i = 0; i < p_dr->srec_id_cnt; i++ )
+    {
+        int sid = p_dr->srec_ids[i];
+        const Subrecord_result *p_sr;
+        const char *name;
+
+        if ( p_dr->srec_map[sid].qty <= 0 )
+            continue;
+        p_sr = (const Subrecord_result *) p_dr->srec_map[sid].list;
+        if ( p_sr == NULL || p_sr->candidate == NULL
+             || p_sr->candidate->long_names == NULL )
+            continue;
+        name = p_sr->candidate->long_names[p_sr->index];
+        if ( name != NULL && name[0] != '\0' )
+            return name;
+    }
+    return NULL;
+}
+
+static void
+server_add_htable_results( void *arr_v, Hash_table *ht,
+                           const char *origin_label )
+{
+    cJSON *arr = (cJSON *) arr_v;
+    int bucket;
+    Htable_entry *p_hte;
+    Bool_type is_derived;
+
+    if ( ht == NULL || ht->qty_entries == 0 )
+        return;
+
+    is_derived = ( origin_label != NULL
+                   && strcmp( origin_label, "derived" ) == 0 );
+
+    /* Walk all hash table buckets and entries.  The key is the result
+     * name string.  Primal entries point at Primal_result (use
+     * long_name); derived entries point at Derived_result (walk to the
+     * supporting candidate's long_names). The two structs share no
+     * layout — casting a Derived_result to Primal_result reads garbage. */
+    for ( bucket = 0; bucket < ht->size; bucket++ )
+    {
+        for ( p_hte = ht->table[bucket]; p_hte != NULL; p_hte = p_hte->next )
+        {
+            cJSON *entry;
+            const char *title = NULL;
+
+            if ( p_hte->key == NULL )
+                continue;
+
+            if ( p_hte->data != NULL )
+            {
+                if ( is_derived )
+                {
+                    title = derived_long_name(
+                                (const Derived_result *) p_hte->data );
+                }
+                else
+                {
+                    Primal_result *pr = (Primal_result *) p_hte->data;
+                    if ( pr->long_name != NULL && pr->long_name[0] != '\0' )
+                        title = pr->long_name;
+                }
+            }
+
+            entry = cJSON_CreateObject();
+            cJSON_AddStringToObject( entry, "name", p_hte->key );
+            cJSON_AddStringToObject( entry, "title",
+                                     title ? title : p_hte->key );
+            cJSON_AddStringToObject( entry, "origin", origin_label );
+            cJSON_AddItemToArray( arr, entry );
+        }
+    }
+}
+
+void *
+server_build_results_from_htable( void *arr_v, void *ht_v,
+                                  const char *origin_label )
+{
+    server_add_htable_results( arr_v, (Hash_table *) ht_v, origin_label );
+    return arr_v;
+}
+#endif /* GRIZ_SERVER_BUILD */
 
 
 /*****************************************************************
